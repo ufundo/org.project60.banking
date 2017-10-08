@@ -36,7 +36,11 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
 
     // if TRUE, the start_date will be used to determine the payment cycle,
     //   if FALSE, the join_date will be used.
-    if (!isset($config->based_on_start_date)) $config->based_on_start_date = TRUE; 
+    if (!isset($config->based_on_start_date)) $config->based_on_start_date = TRUE;
+
+    // if TRUE, will attempt to renew membership when registering payment
+    //   if FALSE, will just record payment for existing membership period
+    if (!isset($config->renew_membership)) $config->renew_membership = FALSE;
   }
 
   /** 
@@ -64,8 +68,12 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         $suggestion->setTitle(ts("Record as Membership Fee"));
       }
 
-      $suggestion->setId("membership-".$membership['id']);
-      $suggestion->setParameter('membership_id', $membership['id']);
+      $suggestion_type = ($config->renew_membership ? "renewal" : "payment");
+      $membership_id = $membership['id'];
+      $suggestion_id = "$suggestion_type-for-memb-$membership_id";
+      $suggestion->setId($suggestion_id);
+      $suggestion->setParameter('membership_id', $membership_id);
+      
       $suggestion->setParameter('last_fee_id',   $membership['last_fee_id']);
       $suggestion->setProbability($membership['probability']);
       $btx->addSuggestion($suggestion);
@@ -110,6 +118,29 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
       'membership_id'   => $membership_id,
       'contribution_id' => $contribution['id']
       ));
+	  
+	// 3. renew the membership dates  
+	if($this->_plugin_config->renew_membership) {
+
+		// Jump over to start of the month to avoid problems
+		$new_end_date = date('Y-m-d', strtotime($membership['end_date'].'+1day'));
+                $new_end_date = date('Y-m-d', strtotime("{$new_end_date}+{$membership_type['duration_interval']}{$membership_type['duration_unit']}"));
+                $new_end_date = date('Y-m-d', strtotime($new_end_date.'-1day'));
+
+		//TODO Flush $new_status = 
+
+		$renewal_params = array(
+			'membership_id' => $membership_id,
+	// "extend"-mode		'start_date'	=> $new_start_date,
+			'end_date'	=> $new_end_date,
+			'source'	=> 'Auto-renewed by CiviBanking'
+			//'status_id'		=> 
+			); 
+		
+		$renewal_params = array_merge($renewal_params, $this->getPropagationSet($btx, $suggestion, 'membership'));
+
+		civicrm_api3('Membership','create', $renewal_params);
+	}
 
     // wrap it up
     $suggestion->setParameter('contact_id',      $membership['contact_id']);
@@ -155,14 +186,13 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
     $membership_status = civicrm_api('MembershipStatus', 'getsingle', array('id' => $membership['status_id'], 'version'=>3));
     $contact           = civicrm_api('Contact', 'getsingle', array('id' => $membership['contact_id'], 'version'=>3));
     
-    // load last fee
+    // check dates
     if (!empty($last_fee_id)) {
       $last_fee                = civicrm_api('Contribution', 'getsingle', array('id' => $last_fee_id, 'version'=>3));
       $last_fee['days']        = round((strtotime($btx->booking_date)-(int) strtotime($last_fee['receive_date'])) / (60 * 60 * 24));
       $smarty_vars['last_fee'] = $last_fee;
     }
 
-    // calculate some stuff
     $date_field = ($config->based_on_start_date)?'start_date':'join_date';
     $membership['days'] = round((strtotime($btx->booking_date)-strtotime($membership[$date_field])) / (60 * 60 * 24));
     $membership['percentage_of_minimum'] = round(($btx->amount / (float) $membership_type['minimum_fee']) * 100);
@@ -173,6 +203,7 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
     $smarty_vars['membership_type']   = $membership_type;
     $smarty_vars['membership_status'] = $membership_status;
     $smarty_vars['contact']           = $contact;
+    $smarty_vars['renew_membership']  = $config->renew_membership;
 
     $smarty = CRM_Banking_Helpers_Smarty::singleton();
     $smarty->pushScope($smarty_vars);
@@ -225,6 +256,7 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         'last_fee_amount'              => $query->last_fee_amount,
         'last_fee_date'                => $query->last_fee_date,
         'membership_start_date'        => $query->membership_start_date,
+        'membership_end_date'          => $query->membership_end_date,
         'membership_duration_unit'     => $query->membership_duration_unit,
         'membership_duration_interval' => $query->membership_duration_interval,
         'membership_period_type'       => $query->membership_period_type,
@@ -275,6 +307,7 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         civicrm_membership.contact_id             AS contact_id,
         civicrm_membership.membership_type_id     AS membership_type_id,
         civicrm_membership.$date_field            AS membership_start_date,
+        civicrm_membership.end_date               AS membership_end_date,
         civicrm_membership_type.duration_unit     AS membership_duration_unit,
         civicrm_membership_type.duration_interval AS membership_duration_interval,
         civicrm_membership_type.period_type       AS membership_period_type,
@@ -417,8 +450,9 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
    */
   protected function rateMembership(&$membership, $btx, $context) {
     $rating = 1.0;
+    $config = $this->_plugin_config;
 
-    $amount_penalty = $this->getMembershipOption($membership['membership_type_id'], 'amount_penalty', 0.0);
+    $amount_penalty = $this->getMembershipOption($membership['membership_type_id'], 'amount_penalty', 0.1);
     if ($amount_penalty) {
       // expected fee is the last paid amount, or the minimum fee
       if ($membership['last_fee_amount']) {
@@ -435,17 +469,28 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
       }
     }
 
-    $date_penalty = $this->getMembershipOption($membership['membership_type_id'], 'date_penalty', 0.0);
+    $date_penalty = $this->getMembershipOption($membership['membership_type_id'], 'date_penalty', 0.1);
+    
     if ($date_penalty) {
-      $date_deviation_relative_min = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_relative_min', 0.8);
-      $date_deviation_relative_max = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_relative_max', 1.2);
-      
-      // TODO: get estimated next date (since last payment OR start_date)
+      $date_deviation_days_before = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_days_before', 1);
+      $date_deviation_days_after = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_days_after', 1);
+
+      if (! $config->renew_membership) {
+	  $expected_fee_date = $membership['membership_start_date'];
+	} else {
+	  $expected_fee_date = $membership['membership_end_date']." + 1 day";
+	}
+
+      $expected_date_min = strtotime($expected_fee_date." - $date_deviation_days_before days");
+      $expected_date_max = strtotime($expected_fee_date." + $date_deviation_days_after days");
+	
+	/* / TODO: get estimated next date (since last payment OR start_date)
       if ($membership['last_fee_date']) {
         $reference_date = strtotime($membership['last_fee_date']);
       } else {
         $reference_date = strtotime($membership['membership_start_date']);
       }
+
       $period_type     = $this->getMembershipOption($membership['membership_type_id'], 'period_type',     $membership['membership_period_type']);
       $period_unit     = $this->getMembershipOption($membership['membership_type_id'], 'period_unit',     $membership['membership_duration_unit']);
       $period_interval = $this->getMembershipOption($membership['membership_type_id'], 'period_interval', $membership['membership_duration_interval']);
@@ -460,12 +505,13 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         // OTHER: no expected date, set to the booking date of the payment
         $expected_fee_date = strtotime($btx->booking_date);
       }
-      
-      $date_deviation = strtotime($btx->booking_date) - $expected_fee_date;
-      $period_length  = strtotime("+$period_interval $period_unit") - strtotime("now");
-      $date_deviation_relative = $date_deviation / $period_length;
+	
+      */
 
-      if ($date_deviation_relative < $date_deviation_relative_min || $date_deviation_relative > $date_deviation_relative_max) {
+      $date_received = strtotime($btx->booking_date);
+      //$period_length  = strtotime("$period_interval $period_unit");
+
+      if ($date_received < $expected_date_min || $date_received > $expected_date_max) {
         $rating -= $date_penalty;
       }
     }
