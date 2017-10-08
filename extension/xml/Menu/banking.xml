@@ -4,49 +4,49 @@
     <path>civicrm/banking/payments</path>
     <page_callback>CRM_Banking_Page_Payments</page_callback>
     <title>Transactions</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/accounts</path>
     <page_callback>CRM_Banking_Page_Accounts</page_callback>
     <title>Accounts</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/search</path>
     <page_callback>CRM_Banking_Page_AccountSearch</page_callback>
     <title>Find Accounts</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/dedupe</path>
     <page_callback>CRM_Banking_Page_AccountDedupe</page_callback>
     <title>Dedupe Accounts</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/mandates</path>
     <page_callback>CRM_Banking_Page_SEPAMandates</page_callback>
     <title>SEPAMandates</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/import</path>
     <page_callback>CRM_Banking_Page_Import</page_callback>
     <title>Import</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/export</path>
     <page_callback>CRM_Banking_Page_Export</page_callback>
     <title>Export</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/review</path>
     <page_callback>CRM_Banking_Page_Review</page_callback>
     <title>Review</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/manager</path>
@@ -58,13 +58,13 @@
     <path>civicrm/banking/dashboard</path>
     <page_callback>CRM_Banking_Page_Dashboard</page_callback>
     <title>Dashboard</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/banking/accounts_tab</path>
     <page_callback>CRM_Banking_Form_AccountsTab</page_callback>
     <title>Accounts</title>
-    <access_arguments>access CiviCRM</access_arguments>
+    <access_arguments>edit contributions</access_arguments>
   </item>
   <item>
     <path>civicrm/admin/setting/banking</path>
