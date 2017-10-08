@@ -186,14 +186,13 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
     $membership_status = civicrm_api('MembershipStatus', 'getsingle', array('id' => $membership['status_id'], 'version'=>3));
     $contact           = civicrm_api('Contact', 'getsingle', array('id' => $membership['contact_id'], 'version'=>3));
     
-    // load last fee
+    // check dates
     if (!empty($last_fee_id)) {
       $last_fee                = civicrm_api('Contribution', 'getsingle', array('id' => $last_fee_id, 'version'=>3));
       $last_fee['days']        = round((strtotime($btx->booking_date)-(int) strtotime($last_fee['receive_date'])) / (60 * 60 * 24));
       $smarty_vars['last_fee'] = $last_fee;
     }
 
-    // calculate some stuff
     $date_field = ($config->based_on_start_date)?'start_date':'join_date';
     $membership['days'] = round((strtotime($btx->booking_date)-strtotime($membership[$date_field])) / (60 * 60 * 24));
     $membership['percentage_of_minimum'] = round(($btx->amount / (float) $membership_type['minimum_fee']) * 100);
@@ -451,8 +450,9 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
    */
   protected function rateMembership(&$membership, $btx, $context) {
     $rating = 1.0;
+    $config = $this->_plugin_config;
 
-    $amount_penalty = $this->getMembershipOption($membership['membership_type_id'], 'amount_penalty', 0.0);
+    $amount_penalty = $this->getMembershipOption($membership['membership_type_id'], 'amount_penalty', 0.1);
     if ($amount_penalty) {
       // expected fee is the last paid amount, or the minimum fee
       if ($membership['last_fee_amount']) {
@@ -469,17 +469,28 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
       }
     }
 
-    $date_penalty = $this->getMembershipOption($membership['membership_type_id'], 'date_penalty', 0.0);
+    $date_penalty = $this->getMembershipOption($membership['membership_type_id'], 'date_penalty', 0.1);
+    
     if ($date_penalty) {
-      $date_deviation_relative_min = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_relative_min', 0.8);
-      $date_deviation_relative_max = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_relative_max', 1.2);
-      
-      // TODO: get estimated next date (since last payment OR start_date)
+      $date_deviation_days_before = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_days_before', 1);
+      $date_deviation_days_after = $this->getMembershipOption($membership['membership_type_id'], 'date_deviation_days_after', 1);
+
+      if (! $config->renew_membership) {
+	  $expected_fee_date = $membership['membership_start_date'];
+	} else {
+	  $expected_fee_date = $membership['membership_end_date']." + 1 day";
+	}
+
+      $expected_date_min = strtotime($expected_fee_date." - $date_deviation_days_before days");
+      $expected_date_max = strtotime($expected_fee_date." + $date_deviation_days_after days");
+	
+	/* / TODO: get estimated next date (since last payment OR start_date)
       if ($membership['last_fee_date']) {
         $reference_date = strtotime($membership['last_fee_date']);
       } else {
         $reference_date = strtotime($membership['membership_start_date']);
       }
+
       $period_type     = $this->getMembershipOption($membership['membership_type_id'], 'period_type',     $membership['membership_period_type']);
       $period_unit     = $this->getMembershipOption($membership['membership_type_id'], 'period_unit',     $membership['membership_duration_unit']);
       $period_interval = $this->getMembershipOption($membership['membership_type_id'], 'period_interval', $membership['membership_duration_interval']);
@@ -494,12 +505,13 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         // OTHER: no expected date, set to the booking date of the payment
         $expected_fee_date = strtotime($btx->booking_date);
       }
-      
-      $date_deviation = strtotime($btx->booking_date) - $expected_fee_date;
-      $period_length  = strtotime("+$period_interval $period_unit") - strtotime("now");
-      $date_deviation_relative = $date_deviation / $period_length;
+	
+      */
 
-      if ($date_deviation_relative < $date_deviation_relative_min || $date_deviation_relative > $date_deviation_relative_max) {
+      $date_received = strtotime($btx->booking_date);
+      //$period_length  = strtotime("$period_interval $period_unit");
+
+      if ($date_received < $expected_date_min || $date_received > $expected_date_max) {
         $rating -= $date_penalty;
       }
     }
