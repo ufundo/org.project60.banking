@@ -61,13 +61,14 @@ class CRM_Banking_Matcher_Context {
       $contact_id = CRM_Core_DAO::singleValueQuery('SELECT id FROM civicrm_contact WHERE external_identifier = %1 AND is_deleted=0;',
           array(1 => array($data_parsed['external_identifier'], 'String')));
       if ($contact_id) {
-        $contacts[$contact_id] = 1.0;
+	// Never trust anything 100%
+        $contacts[$contact_id] = 0.9;
       }
     }
 
     // add contact_id if right there...
     if (!empty($data_parsed['contact_id'])) {
-      $contacts[$data_parsed['contact_id']] = 1.0;
+      $contacts[$data_parsed['contact_id']] = 0.9;
     }
 
     // look up accounts
@@ -82,9 +83,9 @@ class CRM_Banking_Matcher_Context {
       if ($probability == 1.0) $perfect_match_count++;
     }
     if ($perfect_match_count > 1) {
-      // in this case, we reduce each probability to 0.99
+	    // in this case, we reduce each probability to 0.9
       foreach ($contacts as $contact => $probability) {
-        if ($probability == 1.0) $contacts[$contact] = 0.99;
+        if ($probability == 1.0) $contacts[$contact] = 0.9;
       }
     }
 
