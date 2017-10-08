@@ -36,7 +36,11 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
 
     // if TRUE, the start_date will be used to determine the payment cycle,
     //   if FALSE, the join_date will be used.
-    if (!isset($config->based_on_start_date)) $config->based_on_start_date = TRUE; 
+    if (!isset($config->based_on_start_date)) $config->based_on_start_date = TRUE;
+
+    // if TRUE, will attempt to renew membership when registering payment
+    //   if FALSE, will just record payment for existing membership period
+    if (!isset($config->renew_membership)) $config->renew_membership = FALSE;
   }
 
   /** 
@@ -64,8 +68,12 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         $suggestion->setTitle(ts("Record as Membership Fee"));
       }
 
-      $suggestion->setId("membership-".$membership['id']);
-      $suggestion->setParameter('membership_id', $membership['id']);
+      $suggestion_type = ($config->renew_membership ? "renewal" : "payment");
+      $membership_id = $membership['id'];
+      $suggestion_id = "$suggestion_type-for-memb-$membership_id";
+      $suggestion->setId($suggestion_id);
+      $suggestion->setParameter('membership_id', $membership_id);
+      
       $suggestion->setParameter('last_fee_id',   $membership['last_fee_id']);
       $suggestion->setProbability($membership['probability']);
       $btx->addSuggestion($suggestion);
@@ -110,6 +118,29 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
       'membership_id'   => $membership_id,
       'contribution_id' => $contribution['id']
       ));
+	  
+	// 3. renew the membership dates  
+	if($this->_plugin_config->renew_membership) {
+
+		// Jump over to start of the month to avoid problems
+		$new_end_date = date('Y-m-d', strtotime($membership['end_date'].'+1day'));
+                $new_end_date = date('Y-m-d', strtotime("{$new_end_date}+{$membership_type['duration_interval']}{$membership_type['duration_unit']}"));
+                $new_end_date = date('Y-m-d', strtotime($new_end_date.'-1day'));
+
+		//TODO Flush $new_status = 
+
+		$renewal_params = array(
+			'membership_id' => $membership_id,
+	// "extend"-mode		'start_date'	=> $new_start_date,
+			'end_date'	=> $new_end_date,
+			'source'	=> 'Auto-renewed by CiviBanking'
+			//'status_id'		=> 
+			); 
+		
+		$renewal_params = array_merge($renewal_params, $this->getPropagationSet($btx, $suggestion, 'membership'));
+
+		civicrm_api3('Membership','create', $renewal_params);
+	}
 
     // wrap it up
     $suggestion->setParameter('contact_id',      $membership['contact_id']);
@@ -173,6 +204,7 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
     $smarty_vars['membership_type']   = $membership_type;
     $smarty_vars['membership_status'] = $membership_status;
     $smarty_vars['contact']           = $contact;
+    $smarty_vars['renew_membership']  = $config->renew_membership;
 
     $smarty = CRM_Banking_Helpers_Smarty::singleton();
     $smarty->pushScope($smarty_vars);
@@ -225,6 +257,7 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         'last_fee_amount'              => $query->last_fee_amount,
         'last_fee_date'                => $query->last_fee_date,
         'membership_start_date'        => $query->membership_start_date,
+        'membership_end_date'          => $query->membership_end_date,
         'membership_duration_unit'     => $query->membership_duration_unit,
         'membership_duration_interval' => $query->membership_duration_interval,
         'membership_period_type'       => $query->membership_period_type,
@@ -275,6 +308,7 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         civicrm_membership.contact_id             AS contact_id,
         civicrm_membership.membership_type_id     AS membership_type_id,
         civicrm_membership.$date_field            AS membership_start_date,
+        civicrm_membership.end_date               AS membership_end_date,
         civicrm_membership_type.duration_unit     AS membership_duration_unit,
         civicrm_membership_type.duration_interval AS membership_duration_interval,
         civicrm_membership_type.period_type       AS membership_period_type,

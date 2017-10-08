@@ -44,10 +44,15 @@
   {capture assign=contact_link}<a title="{$address_text}" href="{crmURL p="civicrm/contact/view" q="reset=1&cid=$contact_id"}">{$contact.display_name} [{$contact.id}]</a>{/capture}
   {assign var=status_text value=$membership_status.label}
   {capture assign=type_link}<a title="{$membership_type.description}" href="{crmURL p="civicrm/contact/view/membership" q="action=view&reset=1&cid=$contact_id&id=$membership_id&context=membership&selectedChild=member"}">"{$membership.title}"</a>{/capture}
-  {capture assign=date_text}{$membership.start_date|crmDate:$config->dateformatFull}{/capture}
+  {capture assign=start_text}{$membership.start_date|crmDate:$config->dateformatFull}{/capture}
+  {capture assign=end_text}{$membership.end_date|crmDate:$config->dateformatFull}{/capture}
   <p>
-    {ts 1=$contact_link 2=$status_text 3=$type_link 4=$date_text}%1 has a <i>%2</i> membership of type %3 since %4.{/ts}
-    {ts}If you confirm this suggestion, the transaction will be recorded as a fee payment for this membership.{/ts}
+    {ts 1=$contact_link 2=$status_text 3=$type_link 4=$start_text 5=$end_text}%1 has a <i>%2</i> membership of type %3 - beginning %4, and ending %5.{/ts}
+    {if !$renew_membership}
+    	{ts}If you confirm this suggestion, the transaction will be recorded as a contribution towards this membership.{/ts}
+    {else}
+        {ts}If you confirm this suggestion, the membership <strong>will be extended by one term.</strong>{/ts}
+    {/if}
   </p>
 </div>
 <div>
