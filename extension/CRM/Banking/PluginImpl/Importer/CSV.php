@@ -193,9 +193,22 @@ class CRM_Banking_PluginImpl_Importer_CSV extends CRM_Banking_PluginModel_Import
 
   protected function import_line($line, $line_nr, $progress, $header, $params) {
     $config = $this->_plugin_config;
-    
+
+    $to_save = $line;
+
     // generate entry data
-    $raw_data = implode(";", $line);
+    if (!empty($config->dont_save)) {
+        foreach ($config->dont_save as $column) {
+          $index = array_search($column, $header);
+          if ($index !== FALSE) {
+            unset($to_save[$index]);
+          }
+        }
+      }
+
+
+
+    $raw_data = implode(";", $to_save);
     $btx = array(
       'version' => 3,
       'currency' => 'EUR',
