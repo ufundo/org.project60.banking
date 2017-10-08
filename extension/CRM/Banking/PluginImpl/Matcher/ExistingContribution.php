@@ -134,12 +134,20 @@ class CRM_Banking_PluginImpl_Matcher_ExistingContribution extends CRM_Banking_Pl
     // payment_instrument match?
     $payment_instrument_penalty = 0.0;
     if (    $config->payment_instrument_penalty 
-        &&  isset($contribution['payment_instrument_id'])
-        &&  isset($parsed_data['payment_instrument']) ) {
-      $contribution_payment_instrument_id = banking_helper_optionvalue_by_groupname_and_name('payment_instrument', $parsed_data['payment_instrument']);
-      if ($contribution_payment_instrument_id != $contribution['payment_instrument_id']) {
-        $payment_instrument_penalty = $config->payment_instrument_penalty;
-      }
+        &&  isset($contribution['payment_instrument_id'])) {
+
+	$txn_payment_instrument_id = 0;
+
+	// if transaction has an id from import - use that rather than doing a name-based lookup 
+	if (isset($parsed_data['payment_instrument_id'])) {
+		 $txn_payment_instrument_id = $parsed_data['payment_instrument_id'];
+	} elseif (isset($parsed_data['payment_instrument'])) {
+		$txn_payment_instrument_id = banking_helper_optionvalueid_by_groupname_and_name('payment_instrument', $parsed_data['payment_instrument']);
+        }
+
+        if ($txn_payment_instrument_id != $contribution['payment_instrument_id']) {
+            $payment_instrument_penalty = $config->payment_instrument_penalty;
+        }
     }
 
     $penalty = 0.0;
