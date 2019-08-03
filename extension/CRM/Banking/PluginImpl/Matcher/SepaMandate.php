@@ -1,7 +1,7 @@
 <?php
 /*-------------------------------------------------------+
 | Project 60 - CiviBanking                               |
-| Copyright (C) 2013-2014 SYSTOPIA                       |
+| Copyright (C) 2013-2018 SYSTOPIA                       |
 | Author: B. Endres (endres -at- systopia.de)            |
 | http://www.systopia.de/                                |
 +--------------------------------------------------------+
@@ -14,12 +14,13 @@
 | written permission from the original author(s).        |
 +--------------------------------------------------------*/
 
+use CRM_Banking_ExtensionUtil as E;
 
 require_once 'CRM/Banking/Helpers/OptionValue.php';
 require_once 'packages/eval-math/evalmath.class.php';
 
 /**
- * This matcher tries to reconcile the payments with existing contributions. 
+ * This matcher tries to reconcile the payments with existing contributions.
  * There are two modes:
  *   default      - matches e.g. to pending contributions and changes the status to completed
  *   cancellation - matches negative amounts to completed contributions and changes the status to cancelled
@@ -29,9 +30,11 @@ require_once 'packages/eval-math/evalmath.class.php';
  */
 class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel_Matcher {
 
+  protected $contribution = NULL;
+
   /**
    * class constructor
-   */ 
+   */
   function __construct($config_name) {
     parent::__construct($config_name);
 
@@ -47,7 +50,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     if (!isset($config->cancellation_general_penalty)) $config->cancellation_general_penalty = 0.0;
     if (!isset($config->cancellation_update_mandate_status_OOFF)) $config->cancellation_update_mandate_status_OOFF = 'INVALID';
     if (!isset($config->cancellation_update_mandate_status_RCUR)) $config->cancellation_update_mandate_status_RCUR = false;
-    if (!isset($config->cancellation_default_reason)) $config->cancellation_default_reason = ts("Unspecified SEPA cancellation");
+    if (!isset($config->cancellation_default_reason)) $config->cancellation_default_reason = E::ts("Unspecified SEPA cancellation");
     if (!isset($config->cancellation_date_minimum)) $config->cancellation_date_minimum = "-10 days";
     if (!isset($config->cancellation_date_maximum)) $config->cancellation_date_maximum = "+30 days";
     if (!isset($config->cancellation_status_penalty)) $config->cancellation_status_penalty = array("1" => 0.0, "5" => 0.2); // is a mapping of "contribution status id" => "penalty". If status not in list, no suggestion will be generated
@@ -63,7 +66,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     if (!isset($config->cancellation_cancel_reason))         $config->cancellation_cancel_reason         = 0; // set to 1 to enable
     if (!isset($config->cancellation_cancel_reason_edit))    $config->cancellation_cancel_reason_edit    = 1; // set to 0 to disable user input
     if (!isset($config->cancellation_cancel_reason_source))  $config->cancellation_cancel_reason_source  = 'cancel_reason';
-    if (!isset($config->cancellation_cancel_reason_default)) $config->cancellation_cancel_reason_default = ts('Unknown');
+    if (!isset($config->cancellation_cancel_reason_default)) $config->cancellation_cancel_reason_default = E::ts('Unknown');
 
     // extended cancellation features: fee
     if (!isset($config->cancellation_cancel_fee))            $config->cancellation_cancel_fee            = 0; // set to 1 to enable
@@ -81,14 +84,14 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     // create activity
     if (!isset($config->cancellation_create_activity))             $config->cancellation_create_activity             = false;
     if (!isset($config->cancellation_create_activity_type_id))     $config->cancellation_create_activity_type_id     = 37;
-    if (!isset($config->cancellation_create_activity_subject))     $config->cancellation_create_activity_subject     = ts("Follow-up SEPA Cancellation");
+    if (!isset($config->cancellation_create_activity_subject))     $config->cancellation_create_activity_subject     = E::ts("Follow-up SEPA Cancellation");
     if (!isset($config->cancellation_create_activity_assignee_id)) $config->cancellation_create_activity_assignee_id = 0; // will be replaced with current user
     if (!isset($config->cancellation_create_activity_text))        $config->cancellation_create_activity_text        = '';
   }
 
-  /** 
+  /**
    * Generate a set of suggestions for the given bank transaction
-   * 
+   *
    * @return array(match structures)
    */
   public function match(CRM_Banking_BAO_BankTransaction $btx, CRM_Banking_Matcher_Context $context) {
@@ -97,6 +100,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     $data_parsed = $btx->getDataParsed();
     $probability = 1.0 - $this->getPenalty($btx);
     $cancellation_mode = ((bool) $config->cancellation_enabled) && ($btx->amount < 0);
+    $this->contribution = NULL;
 
     // look for the 'sepa_mandate' key
     if (empty($data_parsed['sepa_mandate'])) return null;
@@ -105,7 +109,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     $mandate_reference = $data_parsed['sepa_mandate'];
     $mandate = civicrm_api('SepaMandate', 'getsingle', array('version'=>3, 'reference'=>$mandate_reference));
     if (!empty($mandate['is_error'])) {
-      CRM_Core_Session::setStatus(sprintf(ts("Couldn't load SEPA mandate for reference %s"), $mandate_reference), ts('Error'), 'error');
+      CRM_Core_Session::setStatus(sprintf(E::ts("Couldn't load SEPA mandate for reference %s"), $mandate_reference), E::ts('Error'), 'error');
       return null;
     }
 
@@ -122,10 +126,10 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
         $value_date = strtotime($btx->value_date);
         if ($cancellation_mode) {
           $earliest_date = date('Ymdhis', strtotime($config->cancellation_date_minimum, $value_date));
-          $latest_date = date('Ymdhis', strtotime($config->cancellation_date_maximum, $value_date));        
+          $latest_date = date('Ymdhis', strtotime($config->cancellation_date_maximum, $value_date));
         } else {
           $earliest_date = date('Ymdhis', strtotime($config->received_date_minimum, $value_date));
-          $latest_date = date('Ymdhis', strtotime($config->received_date_maximum, $value_date));        
+          $latest_date = date('Ymdhis', strtotime($config->received_date_maximum, $value_date));
         }
 
         $contribution_id = 0;
@@ -141,14 +145,14 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
             $contribution_id = $found_contribution->id;
           } else {
             // this is the second contribution found!
-            CRM_Core_Session::setStatus(ts("There was more than one matching contribution found! Try to configure the plugin with a smaller search time span."), ts('Error'), 'error');
+            CRM_Core_Session::setStatus(E::ts("There was more than one matching contribution found! Try to configure the plugin with a smaller search time span."), E::ts('Error'), 'error');
             return null;
           }
         }
         if (!$contribution_id) {
           // no contribution found
-          CRM_Core_Session::setStatus(ts("There was no matching contribution! Try to configure the plugin with a larger search time span."), ts('Error'), 'error');
-          return null;        
+          CRM_Core_Session::setStatus(E::ts("There was no matching contribution! Try to configure the plugin with a larger search time span."), E::ts('Error'), 'error');
+          return null;
         }
 
       } else {
@@ -166,26 +170,26 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
 
         if (!$contribution_id) {
           // no contribution found
-          CRM_Core_Session::setStatus(ts("There is no contribution for mandate '{$data_parsed['sepa_mandate']}' in group '{$data_parsed['sepa_batch']}'"), ts('Error'), 'error');
-          return null;        
+          CRM_Core_Session::setStatus(E::ts("There is no contribution for mandate '{$data_parsed['sepa_mandate']}' in group '{$data_parsed['sepa_batch']}'"), E::ts('Error'), 'error');
+          return null;
         }
       }
 
 
     } else {
-      error_log("org.project60.sepa: matcher_sepa: Bad mandate type.");
+      $this->logMessage("Bad mandate type.", 'warn');
       return null;
     }
 
     // now, let's have a look at this contribution and its contact...
     $contribution = civicrm_api('Contribution', 'getsingle', array('id'=>$contribution_id, 'version'=>3));
-    if (!empty($contribution['is_error'])) {      
-        CRM_Core_Session::setStatus(ts("The contribution connected to this mandate could not be read."), ts('Error'), 'error');
+    if (!empty($contribution['is_error'])) {
+        CRM_Core_Session::setStatus(E::ts("The contribution connected to this mandate could not be read."), E::ts('Error'), 'error');
         return null;
     }
     $contact = civicrm_api('Contact', 'getsingle', array('id'=>$contribution['contact_id'], 'version'=>3));
-    if (!empty($contact['is_error'])) {      
-        CRM_Core_Session::setStatus(ts("The contact connected to this mandate could not be read."), ts('Error'), 'error');
+    if (!empty($contact['is_error'])) {
+        CRM_Core_Session::setStatus(E::ts("The contact connected to this mandate could not be read."), E::ts('Error'), 'error');
         return null;
     }
 
@@ -195,33 +199,33 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     $suggestion->setParameter('contact_id', $contribution['contact_id']);
     $suggestion->setParameter('mandate_id', $mandate['id']);
     $suggestion->setParameter('mandate_reference', $mandate_reference);
-    
+
     if (!$cancellation_mode) {
       // STANDARD SUGGESTION:
-      $suggestion->setTitle(ts("SEPA SDD Transaction"));
+      $suggestion->setTitle(E::ts("SEPA SDD Transaction"));
 
       // add penalties for deviations in amount,status,deleted contact
       if ($btx->amount != $contribution['total_amount']) {
-        $suggestion->addEvidence($config->deviation_penalty, ts("The contribution does not feature the expected amount."));
+        $suggestion->addEvidence($config->deviation_penalty, E::ts("The contribution does not feature the expected amount."));
         $probability -= $config->deviation_penalty;
       }
       $status_inprogress = banking_helper_optionvalue_by_groupname_and_name('contribution_status', 'In Progress');
       if ($contribution['contribution_status_id'] != $status_inprogress) {
-        $suggestion->addEvidence($config->deviation_penalty, ts("The contribution does not have the expected status 'in Progress'."));
+        $suggestion->addEvidence($config->deviation_penalty, E::ts("The contribution does not have the expected status 'in Progress'."));
         $probability -= $config->deviation_penalty;
       }
       if (!empty($contact['contact_is_deleted'])) {
-        $suggestion->addEvidence($config->deviation_penalty, ts("The contact this mandate belongs to has been deleted."));
+        $suggestion->addEvidence($config->deviation_penalty, E::ts("The contact this mandate belongs to has been deleted."));
         $probability -= $config->deviation_penalty;
       }
 
     } else {
       // CANCELLATION SUGGESTION:
-      $suggestion->setTitle(ts("Cancel SEPA SDD Transaction"));
+      $suggestion->setTitle(E::ts("Cancel SEPA SDD Transaction"));
       $suggestion->setParameter('cancellation_mode', $cancellation_mode);
       $suggestion->setParameter('contribution_status_id', $contribution['contribution_status_id']);
 
-      
+
       // check contribution status (see BANKING-135)
       $cancellation_status_penalty = NULL;
       $contribution_status_id      = $contribution['contribution_status_id'];
@@ -236,6 +240,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
       }
       if ($cancellation_status_penalty === NULL) {
         // the status is not in the list => don't even create a suggestion
+        $this->logMessage("Unmapped contributions status [{$contribution_status_id}] encountered. No suggestion generated!", 'warn');
         return NULL;
       }
       $probability -= $cancellation_status_penalty;
@@ -249,11 +254,11 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
       $amount_range = max($amount_range_rel, $amount_range_abs);
       $amount_delta = $contribution_amount - $target_amount;
 
-      // check for amount limits      
+      // check for amount limits
       if ($amount_range) {
         $penalty = $config->cancellation_amount_penalty * (abs($amount_delta) / $amount_range);
         if ($penalty > $config->cancellation_penalty_threshold) {
-          $suggestion->addEvidence($config->cancellation_amount_penalty, ts("The cancellation fee, i.e. the deviation from the original amount, is not in the specified range."));
+          $suggestion->addEvidence($config->cancellation_amount_penalty, E::ts("The cancellation fee, i.e. the deviation from the original amount, is not in the specified range."));
           $probability -= $penalty;
         }
       }
@@ -283,7 +288,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
           }
           $suggestion->setParameter('cancel_fee', number_format($meval->evaluate($config->cancellation_cancel_fee_default),2));
         } catch (Exception $e) {
-          error_log("org.project60.banking.matcher.existing: Couldn't calculate cancellation_fee. Error was: $e");
+          $this->logMessage("Couldn't calculate cancellation_fee. Error was: {$e->getMessage()}", 'error');
         }
       }
     }
@@ -297,11 +302,12 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
 
   /**
    * Handle the different actions, should probably be handles at base class level ...
-   * 
+   *
    * @param type $match
    * @param type $btx
    */
   public function execute($match, $btx) {
+    $this->contribution = NULL;
     $cancellation_mode = $match->getParameter('cancellation_mode');
     if (!empty($cancellation_mode)) {
       // CANCELLATION is an entirely different process...
@@ -313,44 +319,30 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     $status_inprogress = banking_helper_optionvalue_by_groupname_and_name('contribution_status', 'In Progress');
     $status_completed = banking_helper_optionvalue_by_groupname_and_name('contribution_status', 'Completed');
 
-    // unfortunately, we might have to do some fixes first...
-
-    // FIX 1: fix contribution, if it has no financial transactions. (happens due to a status-bug in civicrm)
-    //        in this case, set the status back to 'Pending', no 'is_pay_later'
-    $fix_rotten_contribution_sql = "
-    UPDATE 
-      civicrm_contribution 
-    SET 
-      contribution_status_id=$status_pending, is_pay_later=0 
-    WHERE 
-        id = $contribution_id
-    AND NOT (   SELECT count(entity_id) 
-                FROM civicrm_entity_financial_trxn 
-                WHERE entity_table='civicrm_contribution'
-                AND   entity_id = $contribution_id 
-            );";
-    CRM_Core_DAO::executeQuery($fix_rotten_contribution_sql);
-
-    // FIX 2: in CiviCRM pre 4.4.4, the status change 'In Progress' => 'Completed' was not allowed
-    //        in this case, set the status back to 'Pending', no 'is_pay_later'
-    if (CRM_Utils_System::version() < '4.4.4') {
-      $fix_status_query = "
+    // Compatibility with CiviCRM < 4.7.0
+    if (version_compare(CRM_Utils_System::version(), '4.7.0', '<')) {
+      // Fix contribution, if it has no financial transactions. (happens due to a status-bug in civicrm)
+      // in this case, set the status back to 'Pending', no 'is_pay_later'
+      // This, however, would cause problems in later CiviCRM versions, see BANKING-243, hence the version check
+      $fix_rotten_contribution_sql = "
       UPDATE
-          civicrm_contribution
+        civicrm_contribution
       SET
-          contribution_status_id = $status_pending,
-          is_pay_later = 0
-      WHERE 
-          contribution_status_id = $status_inprogress
-      AND id = $contribution_id;
-      ";
-      CRM_Core_DAO::executeQuery($fix_status_query);
+        contribution_status_id=$status_pending, is_pay_later=0
+      WHERE
+          id = $contribution_id
+      AND NOT (   SELECT count(entity_id)
+                  FROM civicrm_entity_financial_trxn
+                  WHERE entity_table='civicrm_contribution'
+                  AND   entity_id = $contribution_id
+              );";
+      CRM_Core_DAO::executeQuery($fix_rotten_contribution_sql);
     }
 
     // look up the txgroup
     $txgroup_query = civicrm_api('SepaContributionGroup', 'getsingle', array('contribution_id'=>$contribution_id, 'version'=>3));
     if (!empty($txgroup_query['is_error'])) {
-      CRM_Core_Session::setStatus(ts("Contribution is NOT member in exactly one SEPA transaction group!"), ts('Error'), 'error');
+      CRM_Core_Session::setStatus(E::ts("Contribution is NOT member in exactly one SEPA transaction group!"), E::ts('Error'), 'error');
       return;
     }
     $txgroup_id = $txgroup_query['txgroup_id'];
@@ -363,8 +355,8 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     $result = civicrm_api('Contribution', 'create', $query);
 
     if (isset($result['is_error']) && $result['is_error']) {
-      error_log("org.project60.sepa: matcher_sepa: Couldn't modify contribution, error was: ".$result['error_message']);
-      CRM_Core_Session::setStatus(ts("Couldn't modify contribution."), ts('Error'), 'error');
+      $this->logMessage("Couldn't modify contribution, error was: ".$result['error_message'], 'error');
+      CRM_Core_Session::setStatus(E::ts("Couldn't modify contribution."), E::ts('Error'), 'error');
 
     } else {
       // everything seems fine, save the account
@@ -376,13 +368,13 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
 
       // close transaction group if this was the last transaction
       $open_contributions_in_group_sql = "
-      SELECT 
+      SELECT
         count(c2group.id) AS open_count
-      FROM 
+      FROM
         civicrm_sdd_contribution_txgroup c2group
-      LEFT JOIN 
+      LEFT JOIN
         civicrm_contribution contribution ON c2group.contribution_id=contribution.id
-      WHERE 
+      WHERE
           c2group.txgroup_id = $txgroup_id
       AND contribution.contribution_status_id IN ($status_pending,$status_inprogress);";
       $result = CRM_Core_DAO::executeQuery($open_contributions_in_group_sql);
@@ -393,15 +385,15 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
           $txgroup_query = array('id'=>$txgroup_id, 'status_id'=>$group_status_id_received, 'version'=>3);
           $close_result = civicrm_api('SepaTransactionGroup', 'create', $txgroup_query);
           if (!empty($close_result['is_error'])) {
-            CRM_Core_Session::setStatus(sprintf("Cannot mark transaction group [%s] received. Error: %s", $txgroup_id, $close_result['error_message']), ts('Error'), 'error');
+            CRM_Core_Session::setStatus(sprintf("Cannot mark transaction group [%s] received. Error: %s", $txgroup_id, $close_result['error_message']), E::ts('Error'), 'error');
             return;
           }
           $txgroup = civicrm_api('SepaTransactionGroup', 'getsingle', $txgroup_query);
           if (!empty($txgroup['is_error'])) {
-            CRM_Core_Session::setStatus(sprintf("Cannot mark transaction group [%s] received. Error: %s", $txgroup_id, $txgroup['error_message']), ts('Error'), 'error');
+            CRM_Core_Session::setStatus(sprintf("Cannot mark transaction group [%s] received. Error: %s", $txgroup_id, $txgroup['error_message']), E::ts('Error'), 'error');
             return;
           }
-          CRM_Core_Session::setStatus(sprintf(ts("SEPA transaction group '%s' was marked as received."), $txgroup['reference']), ts('Success'), 'info');
+          CRM_Core_Session::setStatus(sprintf(E::ts("SEPA transaction group '%s' was marked as received."), $txgroup['reference']), E::ts('Success'), 'info');
         }
       }
     }
@@ -414,7 +406,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
 
   /**
    * Handle the different actions, should probably be handles at base class level ...
-   * 
+   *
    * @param type $match
    * @param type $btx
    */
@@ -429,12 +421,15 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     $contribution = civicrm_api3('Contribution', 'getsingle', array('id' => $contribution_id));
     if ($contribution_status_id) {
       if ($contribution['contribution_status_id'] != $contribution_status_id) {
-        CRM_Core_Session::setStatus(ts("Contribution status has been modified."), ts('Error'), 'error');
+        CRM_Core_Session::setStatus(E::ts("Contribution status has been modified."), E::ts('Error'), 'error');
         return FALSE;
       }
     }
+    // store contribution for reference (e.g. in propagation)
+    $this->contribution = $contribution;
 
     // set the status to 'Cancelled'
+    $this->logger->setTimer('sepa_mandate_cancel_contribution');
     $query = array('version' => 3, 'id' => $contribution_id);
     $query['contribution_status_id'] = $status_cancelled;
     $query['cancel_date'] = date('Ymdhis', strtotime($btx->value_date));
@@ -445,19 +440,28 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     if ($config->cancellation_cancel_reason) {
       $query['cancel_reason'] = $match->getParameter('cancel_reason');
     }
+    $this->logMessage("SepaMandate matcher calling Contribution.create: " . json_encode($query), 'debug');
     $result = civicrm_api('Contribution', 'create', $query);
+    $this->logTime('Cancel Contribution', 'sepa_mandate_cancel_contribution');
 
     if (isset($result['is_error']) && $result['is_error']) {
-      error_log("org.project60.sepa: matcher_sepa: Couldn't modify contribution, error was: ".$result['error_message']);
-      CRM_Core_Session::setStatus(ts("Couldn't modify contribution."), ts('Error'), 'error');
+      $this->logMessage("Couldn't modify contribution, error was: ".$result['error_message'], 'error');
+      CRM_Core_Session::setStatus(E::ts("Couldn't modify contribution."), E::ts('Error'), 'error');
+      return FALSE;
 
     } else {
       // now for the mandate...
       $contribution = civicrm_api('Contribution', 'getsingle', array('version'=>3, 'id' => $contribution_id));
       if (!empty($contribution['is_error'])) {
-        error_log("org.project60.sepa: matcher_sepa: Couldn't load contribution, error was: ".$result['error_message']);
-        CRM_Core_Session::setStatus(ts("Couldn't modify contribution."), ts('Error'), 'error');
+        $this->logMessage("Couldn't load contribution, error was: ".$result['error_message'], 'error');
+        CRM_Core_Session::setStatus(E::ts("Couldn't modify contribution."), E::ts('Error'), 'error');
+
       } else {
+          // compatibility: contribution_payment_instrument isn't set any more...
+        if (!empty($contribution['payment_instrument'])) {
+          $contribution['contribution_payment_instrument'] = $contribution['payment_instrument'];
+        }
+
         if (   'OOFF' == $contribution['contribution_payment_instrument']
             && !empty($config->cancellation_update_mandate_status_OOFF)) {
           // everything seems fine, adjust the mandate's status
@@ -466,8 +470,9 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
           $query = array_merge($query, $this->getPropagationSet($btx, $match, 'mandate'));   // add propagated values
           $result = civicrm_api('SepaMandate', 'create', $query);
           if (!empty($result['is_error'])) {
-            error_log("org.project60.sepa: matcher_sepa: Couldn't modify mandate, error was: ".$result['error_message']);
-            CRM_Core_Session::setStatus(ts("Couldn't modify mandate."), ts('Error'), 'error');
+            $this->logMessage("Couldn't modify mandate, error was: ".$result['error_message'], 'error');
+            CRM_Core_Session::setStatus(E::ts("Couldn't modify mandate."), E::ts('Error'), 'error');
+            return FALSE;
           }
         } elseif (   'RCUR' == $contribution['contribution_payment_instrument']
                   && !empty($config->cancellation_update_mandate_status_RCUR)) {
@@ -477,11 +482,12 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
           $query = array_merge($query, $this->getPropagationSet($btx, $match, 'mandate'));   // add propagated values
           $result = civicrm_api('SepaMandate', 'create', $query);
           if (!empty($result['is_error'])) {
-            error_log("org.project60.sepa: matcher_sepa: Couldn't modify mandate, error was: ".$result['error_message']);
-            CRM_Core_Session::setStatus(ts("Couldn't modify mandate."), ts('Error'), 'error');
+            $this->logMessage("Couldn't modify mandate, error was: ".$result['error_message'], 'error');
+            CRM_Core_Session::setStatus(E::ts("Couldn't modify mandate."), E::ts('Error'), 'error');
+            return FALSE;
           }
         }
-      } 
+      }
     }
 
     // create activity if wanted
@@ -491,7 +497,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
       $smarty_vars['contribution']  = $contribution;
       $smarty_vars['cancel_fee']    = $match->getParameter('cancel_fee');
       $smarty_vars['cancel_reason'] = $match->getParameter('cancel_reason');
-      
+
       // load the mandate
       $mandate = civicrm_api('SepaMandate', 'getsingle', array('id' => $mandate_id, 'version' => 3));
       $smarty_vars['mandate'] = $mandate;
@@ -537,7 +543,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
         $details = $smarty->fetch("string:" . $config->cancellation_create_activity_text);
       }
       $smarty->popScope();
-      
+
       $activity_parameters = array(
         'version'            => 3,
         'activity_type_id'   => $config->cancellation_create_activity_type_id,
@@ -584,13 +590,33 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     }
   }
 
-    /** 
+
+  /**
+   * Fetch a named propagation object.
+   * @see CRM_Banking_PluginModel_BtxBase::getPropagationValue
+   */
+  public function getPropagationObject($name, $btx) {
+    // in this default implementation, no extra objects are provided
+    // please overwrite in the plugin implementation
+    switch ($name) {
+      case 'contribution':
+        // currently only works for cancellation
+        return $this->contribution;
+
+      default:
+        // nothing to do here
+        break;
+    }
+    return parent::getPropagationObject($name, $btx);
+  }
+
+    /**
    * Generate html code to visualize the given match. The visualization may also provide interactive form elements.
-   * 
+   *
    * @val $match    match data as previously generated by this plugin instance
    * @val $btx      the bank transaction the match refers to
    * @return html code snippet
-   */  
+   */
   function visualize_match( CRM_Banking_Matcher_Suggestion $match, $btx) {
     $config = $this->_plugin_config;
     $smarty_vars = array();
@@ -639,7 +665,7 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
 
     } else {
       // CONTRIBUTION NOT FOUND!
-      $smarty_vars['error'] = ts("Internal error! Cannot find contribution #").$match->getParameter('contribution_id');
+      $smarty_vars['error'] = E::ts("Internal error! Cannot find contribution #").$match->getParameter('contribution_id');
     }
 
     $smarty = CRM_Banking_Helpers_Smarty::singleton();
@@ -649,13 +675,13 @@ class CRM_Banking_PluginImpl_Matcher_SepaMandate extends CRM_Banking_PluginModel
     return $html_snippet;
   }
 
-  /** 
+  /**
    * Generate html code to visualize the executed match.
-   * 
+   *
    * @val $match    match data as previously generated by this plugin instance
    * @val $btx      the bank transaction the match refers to
    * @return html code snippet
-   */  
+   */
   function visualize_execution_info( CRM_Banking_Matcher_Suggestion $match, $btx) {
     // just assign to smarty and compile HTML
     $smarty_vars = array();

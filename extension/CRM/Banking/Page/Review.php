@@ -1,7 +1,7 @@
 <?php
 /*-------------------------------------------------------+
 | Project 60 - CiviBanking                               |
-| Copyright (C) 2013-2014 SYSTOPIA                       |
+| Copyright (C) 2013-2018 SYSTOPIA                       |
 | Author: B. Endres (endres -at- systopia.de)            |
 | http://www.systopia.de/                                |
 +--------------------------------------------------------+
@@ -14,6 +14,8 @@
 | written permission from the original author(s).        |
 +--------------------------------------------------------*/
 
+use CRM_Banking_ExtensionUtil as E;
+
 require_once 'CRM/Core/Page.php';
 require_once 'CRM/Banking/Helpers/OptionValue.php';
 require_once 'CRM/Banking/Helpers/URLBuilder.php';
@@ -21,6 +23,7 @@ require_once 'CRM/Banking/Helpers/URLBuilder.php';
 class CRM_Banking_Page_Review extends CRM_Core_Page {
 
   function run() {
+      $new_ui_enabled = CRM_Core_BAO_Setting::getItem('CiviBanking', 'new_ui');
       // set this variable to request a redirect
       $url_redirect = NULL;
 
@@ -53,19 +56,35 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
       }
 
       $btx_bao = new CRM_Banking_BAO_BankTransaction();
-      $btx_bao->get('id', $pid);        
+      $btx_bao->get('id', $pid);
 
       // read the list of BTX statuses
       $choices = banking_helper_optiongroup_id_name_mapping('civicrm_banking.bank_tx_status');
 
-      // If the exercution was triggered, run that first
+      // If the execution was triggered, run that first
       if (isset($_REQUEST['execute'])) {
         $execute_bao = ($_REQUEST['execute']==$pid) ? $btx_bao : NULL;
-        $this->execute_suggestion($_REQUEST['execute_suggestion'], $_REQUEST, $execute_bao, $choices);
+        $execution_success = $this->execute_suggestion($_REQUEST['execute_suggestion'], $_REQUEST, $execute_bao, $choices);
 
-        // after execution -> exit if this was the last in the list
-        if (!isset($next_pid) && ($_REQUEST['execute']==$pid)) {
-          $url_redirect = banking_helper_buildURL('civicrm/banking/payments',  $this->_pageParameters());
+        if ($execution_success) {
+          // after execution -> exit if this was the last in the list
+          if (!isset($next_pid) && ($_REQUEST['execute']==$pid)) {
+            if ($new_ui_enabled) {
+              // Determine whether we should go back to the statements or statement lines
+              if (isset($_REQUEST['list'])) {
+                $url_redirect = banking_helper_buildURL('civicrm/banking/statements/lines', array('s_id' => $btx_bao->tx_batch_id));
+              } elseif (isset($_REQUEST['s_list'])) {
+                $url_redirect = banking_helper_buildURL('civicrm/banking/statements', array());
+              }
+            } else {
+              $url_redirect = banking_helper_buildURL('civicrm/banking/payments',  $this->_pageParameters());
+            }
+          }
+        } else {
+          // execution failed -> go back
+          if (isset($prev_pid)) {
+            $url_redirect = banking_helper_buildURL('civicrm/banking/review',  $this->_pageParameters(array('id'=>$prev_pid)));
+          }
         }
       }
 
@@ -77,15 +96,10 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
       $data_parsed = json_decode($btx_bao->data_parsed, true);
       $this->assign('payment_data_parsed', $data_parsed);
       if (!empty($data_parsed['iban'])) $data_parsed['iban'] = CRM_Banking_BAO_BankAccountReference::format('iban',$data_parsed['iban']);
-    
+
       if (empty($contact) && !empty($data_parsed['contact_id'])) {
         // convention: the contact was identified with acceptable precision
-        $contact = civicrm_api('Contact','getsingle',array('version'=>3,'id'=>$data_parsed['contact_id']));
-      }
-      if (!empty($contact)) { 
-        $this->assign('contact', $contact); 
-      } else {
-        $this->assign('contact', NULL);
+        $contact = $this->getContactSafe($data_parsed['contact_id']);
       }
 
       $extra_data = array();
@@ -107,15 +121,15 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
       if ($btx_bao->party_ba_id) {
         // there is a party bank account connected to this
         $ba_bao = new CRM_Banking_BAO_BankAccount();
-        $ba_bao->get('id', $btx_bao->party_ba_id);        
+        $ba_bao->get('id', $btx_bao->party_ba_id);
 
         $this->assign('party_ba', $ba_bao);
         $this->assign('party_ba_data_parsed', json_decode($ba_bao->data_parsed, true));
         $this->assign('party_ba_references', $ba_bao->getReferences());
 
-        // deprecated: contact can also be indetified via other means, see below
-        if ($ba_bao->contact_id) {
-          $contact = civicrm_api('Contact','getsingle',array('version'=>3,'id'=>$ba_bao->contact_id));
+        // deprecated: contact can also be identified via other means, see below
+        if ($ba_bao->contact_id && empty($contact)) {
+          $contact = $this->getContactSafe($ba_bao->contact_id);
         }
       } else {
         // there is no party bank account connected this (yet)
@@ -127,7 +141,7 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
             $reftype_name = CRM_Core_OptionGroup::getValue('civicrm_banking.reference_types', $reftype, 'name', 'String', 'label');
             $this->assign('party_account_reftypename', $reftype_name);
             if ($reftype=='IBAN') {
-              $this->assign('party_account_reftype2', $reftype);  
+              $this->assign('party_account_reftype2', $reftype);
             } else {
               $this->assign('party_account_reftype2', substr($reftype, 5));
             }
@@ -135,6 +149,11 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
         }
       }
 
+      if (!empty($contact)) {
+        $this->assign('contact', $contact);
+      } else {
+        $this->assign('contact', NULL);
+      }
 
       // check if closed ('processed' or 'ignored')
       if ($choices[$btx_bao->status_id]['name']=='processed' || $choices[$btx_bao->status_id]['name']=='ignored') {
@@ -155,9 +174,9 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
 
         // generate message
         if (!empty($execution_info['date'])) {
-          $execution_date = CRM_Utils_Date::customFormat($execution_info['date'], CRM_Core_Config::singleton()->dateformatFull);          
+          $execution_date = CRM_Utils_Date::customFormat($execution_info['date'], CRM_Core_Config::singleton()->dateformatFull);
         } else {
-          $execution_date = ts("<i>unknown date</i>");
+          $execution_date = E::ts("<i>unknown date</i>");
         }
 
         if (!empty($execution_info['executed_by'])) {
@@ -166,30 +185,30 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
           $user_id = $execution_info['executed_by'];
           $user = civicrm_api('Contact', 'getsingle', array('id' => $user_id, 'version' => 3));
           if (empty($user['is_error'])) {
-            $user_link = CRM_Utils_System::url("civicrm/contact/view", "&reset=1&cid=$user_id");            
+            $user_link = CRM_Utils_System::url("civicrm/contact/view", "&reset=1&cid=$user_id");
             $user_string = "<a href='$user_link'>" . $user['display_name'] . "</a>";
           } else {
-            $user_string = ts('Unknown User') . ' ['.$user_id.']';
+            $user_string = E::ts('Unknown User') . ' ['.$user_id.']';
           }
 
           if (empty($execution_info['executed_automatically'])) {
             $automated = '';
           } else {
-            $automated = ts('automatically');
+            $automated = E::ts('automatically');
           }
 
           if ($choices[$btx_bao->status_id]['name']=='processed') {
-            $message = sprintf(ts("This transaction was <b>%s processed</b> on %s by %s."), $automated, $execution_date, $user_string);
+            $message = sprintf(E::ts("This transaction was <b>%s processed</b> on %s by %s."), $automated, $execution_date, $user_string);
           } else {
-            $message = sprintf(ts("This transaction was <b>%s ignored</b> on %s by %s."), $automated, $execution_date, $user_string);
-          }          
+            $message = sprintf(E::ts("This transaction was <b>%s ignored</b> on %s by %s."), $automated, $execution_date, $user_string);
+          }
         } else {
           // visualize the previous, reduced information
           if ($choices[$btx_bao->status_id]['name']=='processed') {
-            $message = sprintf(ts("This transaction was <b>processed</b> on %s."), $execution_date);
+            $message = sprintf(E::ts("This transaction was <b>processed</b> on %s."), $execution_date);
           } else {
-            $message = sprintf(ts("This transaction was marked to be <b>ignored</b> on %s."), $execution_date);
-          }          
+            $message = sprintf(E::ts("This transaction was marked to be <b>ignored</b> on %s."), $execution_date);
+          }
         }
         $this->assign('status_message', $message);
 
@@ -205,7 +224,6 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
                 'color' => $color,
                 'visualization' => $suggestion->visualize($btx_bao),
                 'title' => $suggestion->getTitle(),
-                'actions' => $suggestion->getActions(),
             ));
         }
         $this->assign('suggestions', $suggestions);
@@ -213,7 +231,18 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
 
       // URLs & stats
       $unprocessed_count = 0;
+      $this->assign('new_ui_enabled', $new_ui_enabled);
       $this->assign('url_back', banking_helper_buildURL('civicrm/banking/payments',  $this->_pageParameters()));
+      if ($new_ui_enabled) {
+        // Determine whether we should go back to the statements or statement lines
+        if (isset($_REQUEST['list'])) {
+          $this->assign('url_back', banking_helper_buildURL('civicrm/banking/statements/lines', array('s_id' => $btx_bao->tx_batch_id)));
+          $this->assign('back_to_statement_lines', true);
+        } elseif (isset($_REQUEST['s_list'])) {
+          $this->assign('url_back', banking_helper_buildURL('civicrm/banking/statements', array()));
+          $this->assign('back_to_statement_lines', false);
+        }  
+      }
 
       if (isset($next_pid)) {
         $this->assign('url_skip_forward', banking_helper_buildURL('civicrm/banking/review',  $this->_pageParameters(array('id'=>$next_pid))));
@@ -232,16 +261,16 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
         $this->assign('url_skip_back', banking_helper_buildURL('civicrm/banking/review',  $this->_pageParameters(array('id'=>$prev_pid))));
       }
       $this->assign('url_show_payments', banking_helper_buildURL('civicrm/banking/payments', array('show'=>'payments')));
-      
+
       global $base_url;
       $this->assign('base_url',$base_url);
 
       // Set the page-title dynamically
       if (count($list) > 1) {
-        CRM_Utils_System::setTitle(ts("Review Bank Transaction %1 of %2 (%3 unprocessed ahead)", 
+        CRM_Utils_System::setTitle(E::ts("Review Bank Transaction %1 of %2 (%3 unprocessed ahead)",
           array(1=>$index+1, 2=>count($list), 3=>$unprocessed_count)));
       } else {
-        CRM_Utils_System::setTitle(ts("Review Bank Transaction"));
+        CRM_Utils_System::setTitle(E::ts("Review Bank Transaction"));
       }
 
       // tell the page if popups are available
@@ -259,7 +288,23 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
   }
 
 
-
+  /**
+   * Get the contact data, making sure that it's not deleted
+   *
+   * @param $contact_id integer
+   * @return array|null contact data
+   */
+  protected function getContactSafe($contact_id) {
+    try {
+      return civicrm_api3('Contact','getsingle', [
+          'id'          => $contact_id,
+          'return'      => 'id,display_name',
+          'is_deleted'  => 0,
+          'is_deceased' => 0]);
+    } catch (Exception $ex) {
+      return NULL;
+    }
+  }
 
 
   /**
@@ -275,7 +320,7 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
 
   /**
    * creates an array of all properties defining the current page's state
-   * 
+   *
    * if $override is given, it will be taken into the array regardless
    */
   function _pageParameters($override=array()) {
@@ -303,7 +348,7 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
     // first, only query the remaining items
     $index = array_search($next_pid, $pid_list);
     $remaining_list = implode(',', array_slice($pid_list, $index));
-    
+
     $unprocessed_states   = $choices['ignored']['id'].','.$choices['processed']['id'];
     $unprocessed_sql      = "SELECT id FROM civicrm_bank_tx WHERE `status_id` NOT IN ($unprocessed_states) AND `id` IN ($remaining_list)";
     $unprocessed_query    = CRM_Core_DAO::executeQuery($unprocessed_sql);
@@ -313,7 +358,7 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
       $unprocessed_count++;
       $unprocessed_id = $unprocessed_query->id;
       $new_index = array_search($unprocessed_query->id, $pid_list);
-      if ($new_index < $next_unprocessed_pid) 
+      if ($new_index < $next_unprocessed_pid)
         $next_unprocessed_pid = $new_index;
     }
 
@@ -342,20 +387,36 @@ class CRM_Banking_Page_Review extends CRM_Core_Page {
     if ($suggestion) {
       // update the parameters
       $suggestion->update_parameters($parameters);
-      $btx_bao->saveSuggestions();
-      $suggestion->execute($btx_bao);
 
-      // create a notification bubble for the user
-      $text = $suggestion->visualize_execution($btx_bao);
-      if ($btx_bao->status_id==$choices['processed']['id']) {
-        CRM_Core_Session::setStatus(ts("The transaction was booked.")."<br/>".$text, ts("Transaction closed"), 'info');
-      } elseif ($btx_bao->status_id==$choices['ignored']['id']) {
-        CRM_Core_Session::setStatus(ts("The transaction was ignored.")."<br/>".$text, ts("Transaction closed"), 'info');
+      // now, execute
+      $result = $suggestion->execute($btx_bao);
+      if ($result) {
+        if ($result === 're-run') {
+          // re-analyse + reload the page
+          $engine = CRM_Banking_Matcher_Engine::getInstance();
+          $engine->match($parameters['execute']);
+          CRM_Core_Session::setStatus(E::ts("The transaction has been analysed again."), E::ts("Transaction analysed"), 'info');
+          return NULL; // NO SUCCESSFULL EXECUTION (because it's a re-run)
+        } else {
+          // ALL GOOD:
+          // create a notification bubble for the user
+          $text = $suggestion->visualize_execution($btx_bao);
+          if ($btx_bao->status_id==$choices['processed']['id']) {
+            CRM_Core_Session::setStatus(E::ts("The transaction was booked.")."<br/>".$text, E::ts("Transaction closed"), 'info');
+          } elseif ($btx_bao->status_id==$choices['ignored']['id']) {
+            CRM_Core_Session::setStatus(E::ts("The transaction was ignored.")."<br/>".$text, E::ts("Transaction closed"), 'info');
+          } else {
+            CRM_Core_Session::setStatus(E::ts("The transaction could not be closed."), E::ts("Error"), 'alert');
+          }
+          return TRUE; // SUCCESSFULL EXECUTION
+        }
       } else {
-        CRM_Core_Session::setStatus(ts("The transaction could not be closed."), ts("Error"), 'alert');
+        // something went wrong
+        CRM_Core_Session::setStatus(E::ts("The execution failed, please re-analyse the transaction."), E::ts("Error"), 'alert');
       }
     } else {
-      CRM_Core_Session::setStatus(ts("Selected suggestions disappeared. Suggestion NOT executed!"), ts("Internal Error"), 'error');
+      CRM_Core_Session::setStatus(E::ts("Selected suggestions disappeared. Suggestion NOT executed!"), E::ts("Internal Error"), 'error');
     }
+    return NULL; // NO SUCCESSFULL EXECUTION
   }
 }

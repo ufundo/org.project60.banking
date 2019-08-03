@@ -1,7 +1,7 @@
 <?php
 /*-------------------------------------------------------+
 | Project 60 - CiviBanking                               |
-| Copyright (C) 2013-2014 SYSTOPIA                       |
+| Copyright (C) 2013-2018 SYSTOPIA                       |
 | Author: B. Endres (endres -at- systopia.de)            |
 | http://www.systopia.de/                                |
 +--------------------------------------------------------+
@@ -14,6 +14,8 @@
 | written permission from the original author(s).        |
 +--------------------------------------------------------*/
 
+use CRM_Banking_ExtensionUtil as E;
+
 /**
  *
  * @package org.project60.banking
@@ -25,7 +27,7 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
 
   /**
    * class constructor
-   */ 
+   */
   function __construct($config_name) {
     parent::__construct($config_name);
 
@@ -47,19 +49,14 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
   protected $xpath = NULL;
 
   /**
-   * will be used to avoid multiple account lookups
-   */
-  protected $account_cache = array();
-
-  /**
    * This will be used to suppress duplicates within the same statement
    *  when automatically generating references
    */
   protected $bank_reference_cache = array();
 
-  /** 
+  /**
    * the plugin's user readable name
-   * 
+   *
    * @return string
    */
   static function displayName()
@@ -85,9 +82,9 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     }
   }
 
-  /** 
+  /**
    * Report if the plugin is capable of importing files
-   * 
+   *
    * @return bool
    */
   static function does_import_files()
@@ -95,9 +92,9 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     return true;
   }
 
-  /** 
+  /**
    * Report if the plugin is capable of importing streams, i.e. data from a non-file source, e.g. the web
-   * 
+   *
    * @return bool
    */
   static function does_import_stream()
@@ -105,10 +102,10 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     return false;
   }
 
-  /** 
+  /**
    * Test if the configured source is available and ready
-   * 
-   * @var 
+   *
+   * @var
    * @return TODO: data format?
    */
   function probe_stream( $params )
@@ -116,21 +113,21 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     return false;
   }
 
-  /** 
+  /**
    * Import the given file
-   * 
-   * @return TODO: data format? 
+   *
+   * @return TODO: data format?
    */
   function import_stream( $params )
   {
-    $this->reportDone(ts("Importing streams not supported by this plugin."));
+    $this->reportDone(E::ts("Importing streams not supported by this plugin."));
   }
 
-  /** 
+  /**
    * Test if the given file can be imported
-   * 
-   * @var 
-   * @return TODO: data format? 
+   *
+   * @var
+   * @return TODO: data format?
    */
   function probe_file( $file_path, $params )
   {
@@ -151,7 +148,7 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
   }
 
 
-  /** 
+  /**
    * Imports the given XML file
    *
    */
@@ -174,10 +171,10 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     //  $config->payments is a single, deprecated spec
     $payment_specs = array();
     if (!empty($config->payments)) {
-      $payment_specs[] = $config->payments;      
+      $payment_specs[] = $config->payments;
     }
     foreach ($config->payment_lines as $payment_line) {
-      $payment_specs[] = $payment_line;      
+      $payment_specs[] = $payment_line;
     }
 
     $index = 0;
@@ -267,7 +264,7 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
   protected function import_payment($payment_spec, $payment_node, $stmt_data, $index, $count, $params) {
     $config = $this->_plugin_config;
     $progress = ((float)$index / (float)$count);
-    
+
     $raw_data = $payment_node->ownerDocument->saveXML($payment_node);
     $raw_data = preg_replace("/>\s+</", "><", $raw_data);      // 'flatten' raw_data
 
@@ -298,28 +295,7 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     }
 
     // look up the bank accounts
-    foreach ($data as $key => $value) {
-      // check for NBAN_?? or IBAN endings
-      if (preg_match('/^_.*NBAN_..$/', $key) || preg_match('/^_.*IBAN$/', $key)) {
-        // this is a *BAN entry -> look it up
-        if (!isset($this->account_cache[$value])) {
-          $result = civicrm_api('BankingAccountReference', 'getsingle', array('version' => 3, 'reference' => $value));
-          if (!empty($result['is_error'])) {
-            $this->account_cache[$value] = NULL;
-          } else {
-            $this->account_cache[$value] = $result['ba_id'];
-          }
-        }
-
-        if ($this->account_cache[$value] != NULL) {
-          if (substr($key, 0, 7)=="_party_") {
-            $data['party_ba_id'] = $this->account_cache[$value];  
-          } elseif (substr($key, 0, 1)=="_") {
-            $data['ba_id'] = $this->account_cache[$value];  
-          }
-        }
-      }
-    }
+    $this->lookupBankAccounts($data);
 
     // do some post processing
     if (!isset($config->bank_reference)) {
@@ -344,7 +320,7 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     } else {
       // otherwise use the template
       $bank_reference = $config->bank_reference;
-      $tokens = array(); 
+      $tokens = array();
       preg_match('/\{([^\}]+)\}/', $bank_reference, $tokens);
       foreach ($tokens as $key => $token_name) {
         if (!$key) continue;  // match#0 is not relevant
@@ -352,7 +328,7 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
         $bank_reference = str_replace("{{$token_name}}", $token_value, $bank_reference);
       }
       $data['bank_reference'] = $bank_reference;
-    }    
+    }
 
     // prepare $btx: put all entries, that are not for the basic object, into parsed data
     $btx_parsed_data = array();
@@ -375,9 +351,15 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
    * executes an import rule
    */
   protected function apply_rule($rule, $context, &$data) {
-    // evaluat the condition (if present)
+    // evaluate the condition (if present)
     if (!$this->checkCondition($rule, $context, $data)) {
       return;
+    }
+
+    // get value
+    $value = NULL;
+    if (isset($rule->from)) {
+      $value = $this->getValue($rule->from, $data, $context);
     }
 
     // execute the rule
@@ -460,7 +442,7 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
       } else {
         if (!empty($rule->warn)) {
           $this->reportProgress(CRM_Banking_PluginModel_Base::REPORT_PROGRESS_NONE,
-            sprintf(ts("Pattern '%s' was not found in entry '%s'."), $pattern, $value));
+            sprintf(E::ts("Pattern '%s' was not found in entry '%s'."), $pattern, $value));
         }
       }
 

@@ -1,7 +1,7 @@
 <?php
 /*-------------------------------------------------------+
 | Project 60 - CiviBanking                               |
-| Copyright (C) 2013-2014 SYSTOPIA                       |
+| Copyright (C) 2013-2018 SYSTOPIA                       |
 | Author: B. Endres (endres -at- systopia.de)            |
 | http://www.systopia.de/                                |
 +--------------------------------------------------------+
@@ -16,7 +16,11 @@
 
 class CRM_Banking_Matcher_Context {
 
+  // reference to the BTX being processed
   public $btx;
+
+  // set to the executed suggestion
+  protected $executed_suggestion = NULL;
 
   // will store generic attributes from the various matchers
   private $_attributes = array();
@@ -26,6 +30,7 @@ class CRM_Banking_Matcher_Context {
 
   public function __construct( CRM_Banking_BAO_BankTransaction $btx ) {
     $this->btx = $btx;
+    $btx->context = $this;
   }
 
   /**
@@ -95,6 +100,9 @@ class CRM_Banking_Matcher_Context {
         $selected_contacts[$contact] = $probability;
       }
     }
+
+    // remove contacts that are in trash
+    $selected_contacts = $this->filterDeletedContacts($selected_contacts);
 
     // now sort by probability and return
     arsort($selected_contacts);
@@ -206,6 +214,35 @@ class CRM_Banking_Matcher_Context {
   }
 
   /**
+   * Remove such contacts from the list, that are in trash (is_deleted = 1)
+   * @param $contact2probablility array contact_id => probability
+   * @return array contact_id => probability
+   */
+  public function filterDeletedContacts($contact2probablility) {
+    // if empty, there's nothing to do
+    if (empty($contact2probablility)) {
+      return $contact2probablility;
+    }
+
+    // check if this was cached
+    $cache_key = '_filtered_list_' . sha1(serialize($contact2probablility));
+    $filtered_list = $this->getCachedEntry($cache_key);
+    if ($filtered_list === NULL) {
+      $filtered_list = [];
+      $result = civicrm_api3('Contact', 'get', [
+          'id'         => ['IN' => array_keys($contact2probablility)],
+          'is_deleted' => 0,
+          'return'     => 'id',
+          'sequential' => 1]);
+      foreach ($result['values'] as $contact) {
+        $filtered_list[$contact['id']] = $contact2probablility[$contact['id']];
+      }
+      $this->setCachedEntry($cache_key, $filtered_list);
+    }
+    return $filtered_list;
+  }
+
+  /**
    * Will check if the given key is set in the cache
    *
    * @return the previously stored value, or NULL
@@ -223,5 +260,30 @@ class CRM_Banking_Matcher_Context {
    */
   public function setCachedEntry($key, $value) {
     $this->_caches[$key] = $value;
+  }
+
+  /**
+   * Set the executed suggestion
+   */
+  public function setExecutedSuggestion($suggestion) {
+    $this->executed_suggestion = $suggestion;
+  }
+
+  /**
+   * Get the executed suggestion.
+   * Will be NULL if non has been executed yet
+   */
+  public function getExecutedSuggestion() {
+    return $this->executed_suggestion;
+  }
+
+  /**
+   * remove the internal values, so the GC can pick it up
+   */
+  public function destroy() {
+    $this->btx = NULL;
+    $this->executed_suggestion = NULL;
+    $this->_caches = array();
+    $this->_attributes = array();
   }
 }

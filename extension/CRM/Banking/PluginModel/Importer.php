@@ -1,7 +1,7 @@
 <?php
 /*-------------------------------------------------------+
 | Project 60 - CiviBanking                               |
-| Copyright (C) 2013-2014 SYSTOPIA                       |
+| Copyright (C) 2013-2018 SYSTOPIA                       |
 | Author: B. Endres (endres -at- systopia.de)            |
 | http://www.systopia.de/                                |
 +--------------------------------------------------------+
@@ -15,6 +15,8 @@
 +--------------------------------------------------------*/
 
 require_once 'CRM/Banking/Helpers/OptionValue.php';
+
+use CRM_Banking_ExtensionUtil as E;
 
 /**
  *
@@ -34,12 +36,15 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
   protected $_current_transaction_batch_attributes = array();
   protected $_default_btx_state_id = 0;
 
+  // this will be used to avoid multiple account lookups
+  protected $account_cache = array();
+
   // ------------------------------------------------------
   // Functions to be provided by the plugin implementations
   // ------------------------------------------------------
   /**
    * Report if the plugin is capable of importing files
-   * 
+   *
    * @return bool
    */
   static function does_import_files() {
@@ -48,7 +53,7 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
 
   /**
    * Report if the plugin is capable of importing streams, i.e. data from a non-file source, e.g. the web
-   * 
+   *
    * @return bool
    */
   static function does_import_stream() {
@@ -57,30 +62,30 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
 
   /**
    * Test if the given file can be imported
-   * 
-   * @var 
-   * @return TODO: data format? 
+   *
+   * @var
+   * @return TODO: data format?
    */
   abstract function probe_file($file_path, $params);
 
   /**
    * Import the given file
-   * 
-   * @return TODO: data format? 
+   *
+   * @return TODO: data format?
    */
   abstract function import_file($file_path, $params);
 
   /**
    * Test if the configured source is available and ready
-   * 
-   * @var 
+   *
+   * @var
    * @return TODO: data format?
    */
   abstract function probe_stream($params);
 
   /**
    * Import from the configured source
-   * 
+   *
    * @return TODO: data format?
    */
   abstract function import_stream($params);
@@ -91,6 +96,11 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
   function __construct($plugin_dao) {
     parent::__construct($plugin_dao);
     $this->_default_btx_state_id = banking_helper_optionvalueid_by_groupname_and_name('civicrm_banking.bank_tx_status', 'new');
+
+    // restrict the lookup for the organisation's (own) bank account (see #178)
+    $config = $this->_plugin_config;
+    if (!isset($config->organisation_contact_ids)) $config->organisation_contact_ids = '';
+    if (!isset($config->organisation_ba_ids))      $config->organisation_ba_ids = '';
   }
 
   // ------------------------------------------------------
@@ -98,7 +108,74 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
   // ------------------------------------------------------
 
   /**
-   * This will create a new transaction batch, that all bankt transcations created 
+   * try identify the two bank accounts involved,
+   * and set the party_ba_id and ba_id fields
+   */
+  protected function lookupBankAccounts(&$data) {
+    foreach ($data as $key => $value) {
+      // check for NBAN_?? or IBAN endings
+      if (preg_match('/^_.*NBAN_..$/', $key) || preg_match('/^_.*IBAN$/', $key)) {
+        // this is a *BAN entry -> look it up
+        if (!isset($this->account_cache[$value])) {
+          // not cached? ok, do a lookup:
+          $reference_search_params = array(
+            'reference'    => $value,
+            'return'       => 'ba_id',
+            'option.limit' => 0);
+
+          // add ba_restriction
+          if (!empty($this->_plugin_config->organisation_ba_ids)) {
+            $reference_search_params['ba_id'] = array('IN' => explode(',', $this->_plugin_config->organisation_ba_ids));
+          }
+
+          // search for references
+          $this->logMessage("Looking up bank account reference: " . json_encode($reference_search_params), 'debug');
+          $reference_search = civicrm_api3('BankingAccountReference', 'get', $reference_search_params);
+          $potential_ba_ids = array();
+          foreach ($reference_search['values'] as $reference) {
+            $potential_ba_ids[] = $reference['ba_id'];
+          }
+
+          if (!empty($potential_ba_ids) && !empty($this->_plugin_config->organisation_contact_ids)) {
+            // apply the restriction to contact IDs
+            $ba_search_params = array(
+              'contact_id'   => array('IN' => explode(',', $this->_plugin_config->organisation_contact_ids)),
+              'id'           => array('IN' => $potential_ba_ids),
+              'return'       => 'id',
+              'option.limit' => 0);
+            $this->logMessage("Looking up bank account: " . json_encode($ba_search_params), 'debug');
+            $ba_search = civicrm_api3('BankingAccount', 'get', $ba_search_params);
+
+            // reset potential_ba_ids
+            $potential_ba_ids = array();
+            foreach ($ba_search['values'] as $ba) {
+              $potential_ba_ids[] = $ba['id'];
+            }
+          }
+
+          // cache the result
+          if (count($potential_ba_ids) == 1) {
+            // found exactly 1!
+            $this->account_cache[$value] = $potential_ba_ids[0];
+          } else {
+            $this->account_cache[$value] = NULL;
+          }
+        }
+
+        if ($this->account_cache[$value] != NULL) {
+          if (substr($key, 0, 7)=="_party_") {
+            $data['party_ba_id'] = $this->account_cache[$value];
+          } elseif (substr($key, 0, 1)=="_") {
+            $data['ba_id'] = $this->account_cache[$value];
+          }
+        }
+      }
+    }
+  }
+
+
+  /**
+   * This will create a new transaction batch, that all bankt transcations created
    * with checkAndStoreBTX will be attached to. The transaction gets written when calling
    * the corresponding closeTransactionBatch counterpart.
    *
@@ -120,7 +197,7 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
         $this->_current_transaction_batch->reference = '';
         $this->_current_transaction_batch->sequence = 0;
         $this->_current_transaction_batch->tx_count = 0;
-        //       /\ 
+        //       /\
 
         // add a (unique) default reference (see https://github.com/Project60/CiviBanking/issues/60)
         $this->_current_transaction_batch->reference = 'NOREF-' . md5(microtime());
@@ -129,13 +206,13 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
         $this->_current_transaction_batch_attributes['sum'] = 0;
       }
     } else {
-      $this->reportProgress($progress, ts("Internal error: trying to open BTX batch before closing an old one."), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
+      $this->reportProgress(CRM_Banking_PluginModel_Base::REPORT_PROGRESS_NONE, E::ts("Internal error: trying to open BTX batch before closing an old one."), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
     }
   }
 
   /**
    * This will return the current BTX batch as a BAO to the client for modification.
-   * Please DON'T SAVE THE OBJECT. Saving should take place when calling the 
+   * Please DON'T SAVE THE OBJECT. Saving should take place when calling the
    * closeTransactionBatch() method.
    */
   function getCurrentTransactionBatch($store = TRUE) {
@@ -159,7 +236,7 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
           if (abs($deviation) > 0.005) {
             // there is a (too big) deviation!
             if ($this->_current_transaction_batch->ending_balance) { // only log if it was set
-              $this->reportProgress($progress, sprintf(ts("Adjusted ending balance from %s to %s!"), $this->_current_transaction_batch->ending_balance, $correct_value), CRM_Banking_PluginModel_Base::REPORT_LEVEL_WARN);
+              $this->reportProgress(0.0, sprintf(E::ts("Adjusted ending balance from %s to %s!"), $this->_current_transaction_batch->ending_balance, $correct_value), CRM_Banking_PluginModel_Base::REPORT_LEVEL_WARN);
             }
             $this->_current_transaction_batch->ending_balance = $correct_value;
           }
@@ -210,7 +287,7 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
       }
       $this->_current_transaction_batch = NULL;
     } else {
-      $this->reportProgress($progress, ts("Internal error: trying to close a nonexisting BTX batch."), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
+      $this->reportProgress(CRM_Banking_PluginModel_Base::REPORT_PROGRESS_NONE, E::ts("Internal error: trying to close a nonexisting BTX batch."), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
     }
   }
 
@@ -227,14 +304,14 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
       // keep track of dates
       if (!isset($attribs['starting_date'])) {
         $attribs['starting_date'] = $btx['booking_date'];
-      } else if (strtotime($attribs['ending_date']) > strtotime($btx['booking_date'])) {
+      } else if (strtotime($attribs['starting_date']) > strtotime($btx['booking_date'])) {
         // the new transaction is before the current starting date:
         $attribs['starting_date'] = $btx['booking_date'];
       }
       if (!isset($attribs['ending_date'])) {
         $attribs['ending_date'] = $btx['booking_date'];
       } else if (strtotime($attribs['ending_date']) < strtotime($btx['booking_date'])) {
-        // the new transaction is fater the current ending date:
+        // the new transaction is after the current ending date:
         $attribs['ending_date'] = $btx['booking_date'];
       }
 
@@ -248,7 +325,7 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
       // test currency
       if ($this->_current_transaction_batch->currency && isset($btx['currency'])) {
         if ($this->_current_transaction_batch->currency != $btx['currency']) {
-          $this->reportProgress(CRM_Banking_PluginModel_Base::REPORT_PROGRESS_NONE, ts("WARNING: multiple currency batches not fully supported"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_WARN);
+          $this->reportProgress(CRM_Banking_PluginModel_Base::REPORT_PROGRESS_NONE, E::ts("WARNING: multiple currency batches not fully supported"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_WARN);
         }
       } else {
         $this->_current_transaction_batch->currency = $btx['currency'];
@@ -265,18 +342,21 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
    * @return TRUE, if successful, FALSE if not, or a duplicate existing BTX as property array
    */
   function checkAndStoreBTX($btx, $progress, $params = array()) {
+    // make sure the version is set
+    $btx['version'] = 3;
+
     // first, test for duplicates:
     $duplicate_test = array_intersect_key($btx, $this->_compare_btx_fields);
     $result = civicrm_api('BankingTransaction', 'get', $duplicate_test);
     if (isset($result['is_error']) && $result['is_error']) {
-      $this->reportProgress($progress, ts("Failed to query BTX."), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
+      $this->reportProgress($progress, E::ts("Failed to query BTX."), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
       return FALSE;
     }
 
     if ($result['count'] > 0) {
       // there might be another BTX...check the accounts
       $duplicates = $result['values'];
-      $this->reportProgress($progress, ts("Duplicate BTX entry detected. Not imported!"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_WARN);
+      $this->reportProgress($progress, E::ts("Duplicate BTX entry detected. Not imported!"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_WARN);
       return reset($duplicates); // RETURN FIRST ENTRY
     }
 
@@ -287,13 +367,13 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
 
     // check if booking_date is properly set
     if (empty($btx['booking_date']) || strtotime($btx['booking_date'])===FALSE) {
-      $this->reportProgress($progress, ts("No valid booking date detected. Not imported!"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
+      $this->reportProgress($progress, E::ts("No valid booking date detected. Not imported!"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
       return FALSE;
     }
 
     // check if value_date is properly set
     if (empty($btx['value_date']) || strtotime($btx['value_date'])===FALSE) {
-      $this->reportProgress($progress, ts("No valid value date detected. Not imported!"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
+      $this->reportProgress($progress, E::ts("No valid value date detected. Not imported!"), CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
       return FALSE;
     }
 
@@ -301,8 +381,8 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
     // check for dry run
     if (isset($params['dry_run']) && $params['dry_run'] == "on") {
       // DRY RUN ENABLED
-      $log_entry = ts("DRY RUN: Did not create bank transaction (%1 on %2)", 
-                    array(  1 => CRM_Utils_Money::format($btx['amount'], $btx['currency']), 
+      $log_entry = E::ts("DRY RUN: Did not create bank transaction (%1 on %2)",
+                    array(  1 => CRM_Utils_Money::format($btx['amount'], $btx['currency']),
                             2 => CRM_Utils_Date::customFormat($btx['booking_date'], CRM_Core_Config::singleton()->dateformatFull)));
       $this->reportProgress($progress, $log_entry);
       return TRUE;
@@ -315,14 +395,14 @@ abstract class CRM_Banking_PluginModel_Importer extends CRM_Banking_PluginModel_
       $result = civicrm_api('BankingTransaction', 'create', $btx);
       if ($result['is_error']) {
         $this->reportProgress(
-                $progress, 
-                sprintf(ts("Error while storing BTX: %s"),implode("<br>", $result)), 
+                $progress,
+                sprintf(E::ts("Error while storing BTX: %s"),implode("<br>", $result)),
                 CRM_Banking_PluginModel_Base::REPORT_LEVEL_ERROR);
         return FALSE;
       } else {
-        $log_entry = ts("Created BTX <b>%1</b> for <b>%2</b> on %3", 
+        $log_entry = E::ts("Created BTX <b>%1</b> for <b>%2</b> on %3",
                     array(  1 => $result['id'],
-                            2 => CRM_Utils_Money::format($btx['amount'], $btx['currency']), 
+                            2 => CRM_Utils_Money::format($btx['amount'], $btx['currency']),
                             3 => CRM_Utils_Date::customFormat($btx['booking_date'], CRM_Core_Config::singleton()->dateformatFull)));
         $this->reportProgress($progress, $log_entry);
         $this->_updateTransactionBatchInfo($btx);

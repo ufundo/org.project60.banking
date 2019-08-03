@@ -1,7 +1,7 @@
 <?php
 /*-------------------------------------------------------+
 | Project 60 - CiviBanking                               |
-| Copyright (C) 2013-2014 P. Delbar                      |
+| Copyright (C) 2013-2018 P. Delbar                      |
 | Author: P. Delbar                                      |
 +--------------------------------------------------------+
 | This program is released as free software under the    |
@@ -13,13 +13,16 @@
 | written permission from the original author(s).        |
 +--------------------------------------------------------*/
 
+use CRM_Banking_ExtensionUtil as E;
+
+
 class CRM_Banking_Matcher_Suggestion {
 
     private $_btx = null;
     private $_plugin = null;
-    
+
     private $_blob = array();
-    
+
     public function __construct($plugin, $btx, $blob = null) {
         $this->_btx = $btx;
         $this->_plugin = $plugin;
@@ -36,14 +39,14 @@ class CRM_Banking_Matcher_Suggestion {
         }
 
         if ($this->_btx) {
-            $this->setParameter('btx_id', $this->_btx->id);            
+            $this->setParameter('btx_id', $this->_btx->id);
         }
 
         if ($this->_plugin) {
-            $this->setParameter('plugin_id', $this->_plugin->_plugin_id); 
+            $this->setParameter('plugin_id', $this->_plugin->_plugin_id);
         }
     }
-    
+
     public function getParameter($key) {
         if (isset($this->_blob[$key])) {
             return $this->_blob[$key];
@@ -98,10 +101,6 @@ class CRM_Banking_Matcher_Suggestion {
         return $this->setParameter('probability', $probability);
     }
 
-    public function getActions() {
-      return $this->_plugin->getActions($this->_btx);
-    }
-
     public function getEvidence() {
         return $this->getParameter('reasons');
     }
@@ -129,7 +128,7 @@ class CRM_Banking_Matcher_Suggestion {
             // see if we can use this...
             if ($this->_btx != null) {
                 if ($this->_btx->id != $btx->id) {
-                    CRM_Core_Session::setStatus(ts('Matcher tried to override BTX object with different entity'), ts('Matcher Failure'), 'alert');
+                    CRM_Core_Session::setStatus(E::ts('Matcher tried to override BTX object with different entity'), E::ts('Matcher Failure'), 'alert');
                 }
             }
             $this->_btx = $btx;
@@ -139,7 +138,7 @@ class CRM_Banking_Matcher_Suggestion {
                 $this->_btx = new CRM_Banking_BAO_BankTransaction();
                 $this->_btx->get('id', $this->_blob['btx_id']);
             } else {
-                CRM_Core_Session::setStatus(ts('Could not load BTX object, no id stored.'), ts('Matcher Failure'), 'alert');
+                CRM_Core_Session::setStatus(E::ts('Could not load BTX object, no id stored.'), E::ts('Matcher Failure'), 'alert');
             }
         }
 
@@ -148,7 +147,7 @@ class CRM_Banking_Matcher_Suggestion {
             // see if we can use this...
             if ($this->_plugin != null) {
                 if ($this->_plugin->id != $plugin->id) {
-                    CRM_Core_Session::setStatus(ts('Matcher tried to override plugin object with different entity'), ts('Matcher Failure'), 'alert');
+                    CRM_Core_Session::setStatus(E::ts('Matcher tried to override plugin object with different entity'), E::ts('Matcher Failure'), 'alert');
                 }
             }
             $this->_plugin = $plugin;
@@ -159,7 +158,7 @@ class CRM_Banking_Matcher_Suggestion {
                 $plugin_instance->get('id', $this->_blob['matcher_id']);
                 $this->_plugin = $plugin_instance->getInstance();
             } else {
-                CRM_Core_Session::setStatus(ts('Could not load plugin object, no id stored.'), ts('Matcher Failure'), 'alert');
+                CRM_Core_Session::setStatus(E::ts('Could not load plugin object, no id stored.'), E::ts('Matcher Failure'), 'alert');
             }
         }
     }
@@ -169,7 +168,7 @@ class CRM_Banking_Matcher_Suggestion {
      */
     public function addEvidence($factor, $reason = '') {
         if (($factor < 0) or ($factor > 1)) {
-            CRM_Core_Session::setStatus(ts('Cannot add evidence outside [0,1] range, assuming 1'), ts('Warning: bad matcher evidence'), 'alert');
+            CRM_Core_Session::setStatus(E::ts('Cannot add evidence outside [0,1] range, assuming 1'), E::ts('Warning: bad matcher evidence'), 'alert');
             $factor = 1;
         }
 
@@ -189,33 +188,61 @@ class CRM_Banking_Matcher_Suggestion {
      * the new values will be passed here BEFORE execution
      *
      * this will be passed on to the plugin that generated the suggestion
+     *
+     * @return bool TRUE if there was changes (already saved)
      */
     public function update_parameters($parameters) {
-        return $this->_plugin->update_parameters($this, $parameters);
+      // check if there's anything to update
+      if (empty($parameters)) {
+        return FALSE;
+      }
+
+      // only update if transaction still open (see BANKING-232)
+      if (!banking_helper_tx_status_closed($this->_btx->status_id)) {
+        $this->_plugin->update_parameters($this, $parameters);
+        $this->_btx->saveSuggestions();
+        return TRUE;
+      }
+
+      return FALSE;
     }
 
-    public function execute(CRM_Banking_BAO_BankTransaction $btx, CRM_Banking_PluginModel_Matcher $plugin = null) {
+    /**
+     * Execute this suggestion on the given transaction
+     */
+    public function execute(CRM_Banking_BAO_BankTransaction $btx) {
         // only execute if not completed yet
         if (!banking_helper_tx_status_closed($btx->status_id)) {
             // perform execute
-            return $this->_plugin->execute($this, $btx);
+            $result = $this->_plugin->execute($this, $btx);
+            if ($result && ($result !== 're-run')) {
+                $engine = CRM_Banking_Matcher_Engine::getInstance();
+                $engine->runPostProcessors($this, $btx, $this->_plugin);
+            }
+            return $result;
         } else {
             return TRUE;
         }
     }
 
+    /**
+     * Visualize this suggestion
+     */
     public function visualize(CRM_Banking_BAO_BankTransaction $btx = null, CRM_Banking_PluginModel_Matcher $plugin = null) {
         // if btx/plugin is not supplied (by the matcher engine), recreate it
         $this->_updateObjects($btx, $plugin);
         return $this->_plugin->visualize_match($this, $btx);
     }
 
+    /**
+     * Visualize this execution
+     */
     public function visualize_execution(CRM_Banking_BAO_BankTransaction $btx = null, CRM_Banking_PluginModel_Matcher $plugin = null) {
         // if btx/plugin is not supplied (by the matcher engine), recreate it
         $this->_updateObjects($btx, $plugin);
         return $this->_plugin->visualize_execution_info($this, $btx);
     }
-    
+
     public function prepForJson() {
         return $this->_blob;
     }
