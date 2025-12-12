@@ -178,7 +178,8 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
     // calculate some stuff
     $date_field = ($config->based_on_start_date) ? 'start_date' : 'join_date';
     $membership['days_different'] = $this->getRelativeDays($btx->booking_date, $membership[$date_field]);
-    $membership['percentage_of_minimum'] = round(($btx->amount / (float) $membership_type['minimum_fee']) * 100);
+    $minimumFee = (float) $membership_type['minimum_fee'];
+    $membership['percentage_of_minimum'] = $minimumFee ? round(($btx->amount / $minimumFee) * 100) : 'inf';
     $membership['title'] = $this->getMembershipOption($membership['membership_type_id'], 'title', $membership_type['name']);
 
     // assign to smarty and compile HTML
@@ -234,7 +235,6 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
         'id'                           => $query->id,
         'contact_id'                   => $query->contact_id,
         'membership_type_id'           => $query->membership_type_id,
-        'expected_fee'                 => $query->expected_fee,
         'last_fee_id'                  => $query->last_fee_id,
         'last_fee_amount'              => $query->last_fee_amount,
         'last_fee_date'                => $query->last_fee_date,
@@ -391,12 +391,12 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
   protected function getMembershipAmountRange($membership_type, $context) {
     $config = $this->_plugin_config;
     $expected_fee = (float) $this->getMembershipOption($membership_type['id'],
-                                'membership_fee', $membership_type['minimum_fee']);
+                                'expected_fee', $membership_type['minimum_fee']);
     $min_factor   = (float) $this->getMembershipOption($membership_type['id'],
                                 'amount_min', 1.0);
     $max_factor   = (float) $this->getMembershipOption($membership_type['id'],
                                 'amount_max', 1.0);
-    return [$expected_fee * $min_factor, $expected_fee * $max_factor, $expected_fee];
+    return [$expected_fee * $min_factor, ($expected_fee ?: 1) * $max_factor, $expected_fee];
   }
 
   /**
@@ -436,17 +436,19 @@ class CRM_Banking_PluginImpl_Matcher_Membership extends CRM_Banking_PluginModel_
     if ($amount_penalty) {
       // expected fee is the last paid amount, or the minimum fee
       if ($membership['last_fee_amount']) {
-        $expected_fee = $this->getMembershipOption($membership['membership_type_id'], 'expected_fee', $membership['last_fee_amount']);
+        $expected_fee = (float) $this->getMembershipOption($membership['membership_type_id'], 'expected_fee', $membership['last_fee_amount']);
       }
       else {
-        $expected_fee = $this->getMembershipOption($membership['membership_type_id'], 'expected_fee', $membership['membership_minimum_fee']);
+        $expected_fee = (float) $this->getMembershipOption($membership['membership_type_id'], 'expected_fee', $membership['membership_minimum_fee']);
       }
 
-      $amount_deviation_relative_min = $this->getMembershipOption($membership['membership_type_id'], 'amount_deviation_relative_min', 1.0);
-      $amount_deviation_relative_max = $this->getMembershipOption($membership['membership_type_id'], 'amount_deviation_relative_max', 1.0);
-      $relative_deviation = ((float) $btx->amount / (float) $expected_fee);
-      if ($relative_deviation < $amount_deviation_relative_min || $relative_deviation > $amount_deviation_relative_max) {
-        $rating -= $amount_penalty;
+      if ($expected_fee) {
+        $amount_deviation_relative_min = $this->getMembershipOption($membership['membership_type_id'], 'amount_deviation_relative_min', 1.0);
+        $amount_deviation_relative_max = $this->getMembershipOption($membership['membership_type_id'], 'amount_deviation_relative_max', 1.0);
+        $relative_deviation = ((float) $btx->amount / (float) $expected_fee);
+        if ($relative_deviation < $amount_deviation_relative_min || $relative_deviation > $amount_deviation_relative_max) {
+          $rating -= $amount_penalty;
+        }
       }
     }
 
