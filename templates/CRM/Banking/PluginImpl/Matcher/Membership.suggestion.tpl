@@ -44,9 +44,10 @@
   {capture assign=contact_link}<a title="{$address_text}" href="{crmURL p="civicrm/contact/view" q="reset=1&cid=$contact_id"}">{$contact.display_name} [{$contact.id}]</a>{/capture}
   {assign var=status_text value=$membership_status.label}
   {capture assign=type_link}<a title="{$membership_type.description}" href="{crmURL p="civicrm/contact/view/membership" q="action=view&reset=1&cid=$contact_id&id=$membership_id&context=membership&selectedChild=member"}">"{$membership.title}"</a>{/capture}
-  {capture assign=date_text}{$membership.start_date|crmDate:$config->dateformatFull}{/capture}
+  {capture assign=date_since_text}{$membership.start_date|crmDate:$config->dateformatFull}{/capture}
+  {capture assign=date_expires_text}{$membership.end_date|crmDate:$config->dateformatFull}{/capture}
   <p>
-    {ts 1=$contact_link 2=$status_text 3=$type_link 4=$date_text domain='org.project60.banking'}%1 has a <i>%2</i> membership of type %3 since %4.{/ts}
+    {ts 1=$contact_link 2=$status_text 3=$type_link 4=$date_since_text 5=$date_expires_text domain='org.project60.banking'}%1 has a <i>%2</i> membership of type %3 since %4 with current end date %5.{/ts}
     {ts domain='org.project60.banking'}If you confirm this suggestion, the transaction will be recorded as a fee payment for this membership.{/ts}
   </p>
 </div>
