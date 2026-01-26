@@ -31,14 +31,14 @@
             {
                 "comment": "statement start date - TODO: check timezone parsing for non-UTC",
                 "from": "xpath:BANKTRANLIST\/DTSTART",
-                "to": "tx_batch.from_date",
-                "type": "strtotime:YmdHis\\.v\\[\\+\\0\\:e]"
+                "to": "tx_batch.starting_date",
+                "type": "strtotime:YmdHis.v\\[*?:e\\]"
             },
             {
                 "comment": "statement end date - TODO: check timezone parsing for non-UTC",
                 "from": "xpath:BANKTRANLIST\/DTEND",
-                "to": "tx_batch.to_date",
-                "type": "strtotime:YmdHis\\.v\\[\\+\\0\\:e]"
+                "to": "tx_batch.ending_date",
+                "type": "strtotime:YmdHis.v\\[*?:e\\]"
             },
             {
                 "comment": "statement currency",
@@ -68,13 +68,13 @@
                         "comment": "Booking Date - TODO: check timezone parsing for non-UTC",
                         "from": "xpath:DTPOSTED",
                         "to": "booking_date",
-                        "type": "strtotime:YmdHis\\.v\\[\\+\\0\\:e]"
+                        "type": "strtotime:YmdHis.v\\[*?:e\\]"
                     },
                     {
                         "comment": "Value Date = Booking Date - TODO: check timezone parsing for non-UTC",
                         "from": "xpath:DTPOSTED",
                         "to": "value_date",
-                        "type": "strtotime:YmdHis\\.v\\[\\+\\0\\:e]"
+                        "type": "strtotime:YmdHis.v\\[*?:e\\]"
                     },
                     {
                         "comment": "Transaction Amount",
