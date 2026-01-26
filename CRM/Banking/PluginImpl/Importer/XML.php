@@ -88,7 +88,18 @@ class CRM_Banking_PluginImpl_Importer_XML extends CRM_Banking_PluginModel_Import
     $this->document = new DOMDocument();
     // todo: is this needed?
     // $this->document->encoding = 'ISO-8859-1';
-    $this->document->Load($file_path);
+
+    // strip non-XML header. may not perform well
+    // for large files?
+    if (!empty($params['strip_header'])) {
+      $contents = file_get_contents($file_path);
+      $start = strpos($contents, "<");
+      $contents = substr($contents, $start);
+      $this->document->loadXML($contents);
+    }
+    else {
+      $this->document->Load($file_path);
+    }
     $this->xpath = new DOMXPath($this->document);
 
     foreach ($config->namespaces as $ref => $ns) {

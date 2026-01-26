@@ -9,6 +9,9 @@
         "organisation_contact_ids": "1",
         "log_level": "info",
         "stmt_path": "BANKMSGSRSV1\/STMTTRNRS\/STMTRS",
+        "import_params": {
+            "strip_header": 1
+        },
         "rules": [
             {
                 "comment": "account type",

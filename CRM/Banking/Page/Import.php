@@ -59,6 +59,10 @@ class CRM_Banking_Page_Import extends CRM_Core_Page {
         'dry_run' => ($_REQUEST['dry_run'] ?? 'off'),
         'source'  => ($file_info['name'] ?? 'stream'),
       ];
+      if (isset($plugin_instance->getConfig()->import_params)) {
+        $import_parameters += (array) $plugin_instance->getConfig()->import_params;
+      }
+
       if ($file_info != NULL && $plugin_instance::does_import_files()) {
         // extract files
         $files = $this->getFiles($file_info);
