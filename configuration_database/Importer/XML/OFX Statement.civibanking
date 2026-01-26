@@ -51,6 +51,12 @@
                 "from": "xpath:CURDEF",
                 "to": "tx.currency",
                 "type": "set"
+              },
+              {
+                "comment": "statement reference template",
+                "from": "OFX statement {md5}",
+                "to": "tx_batch.reference",
+                "type": "constant"
             }
         ],
         "payment_lines": [
@@ -79,7 +85,7 @@
                     {
                         "comment": "transaction id",
                         "from": "xpath:FITID",
-                        "to": "trxn_id",
+                        "to": "bank_reference",
                         "type": "set"
                     },
                     {
