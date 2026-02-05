@@ -80,7 +80,7 @@ class CRM_Banking_PluginImpl_Matcher_CreateContribution extends CRM_Banking_Plug
       // set probability manually, I think the automatic calculation provided by ->addEvidence might not be what we need here
       $contact_probability -= $penalty;
       if ($contact_probability >= $threshold) {
-        $suggestion->setProbability($contact_probability);
+        $suggestion->setProbability($contact_probability * $config->factor);
         $btx->addSuggestion($suggestion);
       }
     }
